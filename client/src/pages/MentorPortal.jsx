@@ -314,46 +314,7 @@ function Dashboard({ user }) {
             </div>
 
             {/* Three Column Bottom Section */}
-            <div className="mentor-bottom-grid">
-                {/* Allocated Students */}
-                <div className="dashboard-panel">
-                    <div className="panel-header">
-                        <h3 className="panel-title" style={{ margin: 0 }}>
-                            <Users size={18} color="#3b82f6" /> My Students
-                        </h3>
-                        <span className="student-count-badge">{stats.allocatedStudents?.length || 0}</span>
-                    </div>
-                    <div className="students-list">
-                        {stats.allocatedStudents && stats.allocatedStudents.length > 0 ? (
-                            stats.allocatedStudents.map((student, idx) => (
-                                <div key={student.id} className="student-item">
-                                    <div className="student-avatar" style={{ background: `linear-gradient(135deg, ${COLORS[idx % COLORS.length]}, ${COLORS[(idx + 1) % COLORS.length]})` }}>
-                                        {student.name.charAt(0).toUpperCase()}
-                                    </div>
-                                    <div className="student-info">
-                                        <div className="student-name">{student.name}</div>
-                                        <div className="student-meta">
-                                            <span><BookOpen size={12} /> {student.tasksCompleted} tasks</span>
-                                            <span><Code size={12} /> {student.problemsCompleted} problems</span>
-                                        </div>
-                                    </div>
-                                    <div className="student-score-badge" style={{
-                                        background: student.avgScore >= 70 ? 'rgba(16, 185, 129, 0.15)' : student.avgScore >= 40 ? 'rgba(251, 191, 36, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                                        color: student.avgScore >= 70 ? '#10b981' : student.avgScore >= 40 ? '#fbbf24' : '#ef4444'
-                                    }}>
-                                        {student.avgScore}%
-                                    </div>
-                                </div>
-                            ))
-                        ) : (
-                            <div className="empty-state-small">
-                                <Users size={32} color="var(--text-muted)" />
-                                No students allocated
-                            </div>
-                        )}
-                    </div>
-                </div>
-
+            <div className="mentor-bottom-grid" style={{ gridTemplateColumns: '1fr' }}>
                 {/* Recent Mentee Activity */}
                 <div className="dashboard-panel">
                     <div className="panel-header">
@@ -381,40 +342,6 @@ function Dashboard({ user }) {
                             <div className="empty-state-small">
                                 <Activity size={32} color="var(--text-muted)" />
                                 No recent activity
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                {/* Top Performers */}
-                <div className="dashboard-panel">
-                    <div className="panel-header">
-                        <h3 className="panel-title" style={{ margin: 0 }}>
-                            <Trophy size={18} color="#fbbf24" /> Top Performers
-                        </h3>
-                    </div>
-                    <div className="leaderboard-list">
-                        {stats.menteePerformance && stats.menteePerformance.length > 0 ? (
-                            stats.menteePerformance.map((student, idx) => (
-                                <div key={idx} className="leaderboard-item">
-                                    <div className={`rank-badge rank-${idx + 1}`}>
-                                        {idx + 1}
-                                    </div>
-                                    <div className="leaderboard-info">
-                                        <div className="leaderboard-name">{student.name}</div>
-                                        <div className="leaderboard-stats">
-                                            {student.count} submissions
-                                        </div>
-                                    </div>
-                                    <div className={`leaderboard-score rank-${idx + 1}-score`}>
-                                        {student.score}%
-                                    </div>
-                                </div>
-                            ))
-                        ) : (
-                            <div className="empty-state-small">
-                                <Trophy size={32} color="var(--text-muted)" />
-                                No performers yet
                             </div>
                         )}
                     </div>

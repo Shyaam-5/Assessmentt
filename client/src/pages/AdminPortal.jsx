@@ -132,23 +132,16 @@ function AdminPortal() {
                 { path: '/admin/skill-tests', label: 'Skill Tests', icon: <Brain size={20} /> }
             ]
         },
-        {
-            label: 'Allocations',
-            icon: <Users size={20} />,
-            defaultExpanded: false,
-            children: [
-                { path: '/admin/allocations', label: t('allocations'), icon: <Users size={20} /> }
-            ]
-        },
+
         {
             label: 'Rankings',
             icon: <Trophy size={20} />,
             defaultExpanded: false,
             children: [
-                { path: '/admin/student-leaderboard', label: t('student_ranks'), icon: <Trophy size={20} /> },
-                { path: '/admin/mentor-leaderboard', label: t('mentor_ranks'), icon: <Award size={20} /> }
+                { path: '/admin/student-leaderboard', label: t('student_ranks'), icon: <Trophy size={20} /> }
             ]
         },
+
         {
             label: 'Monitoring',
             icon: <Activity size={20} />,
@@ -182,9 +175,8 @@ function AdminPortal() {
                 <Route path="/global-tests" element={<GlobalTestsAdmin />} />
                 <Route path="/skill-tests" element={<SkillTestManager />} />
                 <Route path="/skill-submissions" element={<SkillSubmissions user={user} isAdmin={true} />} />
-                <Route path="/allocations" element={<Allocations />} />
                 <Route path="/student-leaderboard" element={<StudentLeaderboard />} />
-                <Route path="/mentor-leaderboard" element={<MentorLeaderboard />} />
+
                 <Route path="/all-submissions" element={<AllSubmissions />} />
                 <Route path="/live-monitoring" element={<AdminLiveMonitoring user={user} />} />
                 <Route path="/analytics" element={<AdminAnalyticsDashboard />} />
@@ -790,6 +782,8 @@ function Dashboard() {
                 </div>
 
                 {/* Top Performers */}
+
+
                 <div style={{
                     background: 'var(--bg-card)',
                     border: '1px solid var(--border-color)',
@@ -853,8 +847,8 @@ function Dashboard() {
                         ))}
                     </div>
                 </div>
-            </div>
-        </div>
+            </div >
+        </div >
     )
 }
 
