@@ -116,6 +116,7 @@ app.add_middleware(
 # ─── Register routes ────────────────────────────────────────────
 
 from routes.auth import router as auth_router
+from routes.leaderboard import router as leaderboard_router
 from routes.tasks import router as tasks_router
 from routes.problems import router as problems_router
 from routes.submissions import router as submissions_router
@@ -136,6 +137,7 @@ app.include_router(chat_router)
 app.include_router(messaging_router)
 app.include_router(analytics_router)
 app.include_router(skill_tests_router)
+app.include_router(leaderboard_router)
 
 
 # ─── Health check ────────────────────────────────────────────────
@@ -159,7 +161,7 @@ socket_app = socketio.ASGIApp(sio, app)
 
 # ─── Entry-point ─────────────────────────────────────────────────
 
-if __name__ == "__main__":
+if __name__ == "__main__": # Trigger reload 2
     import uvicorn
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("main:socket_app", host="0.0.0.0", port=port, reload=True)

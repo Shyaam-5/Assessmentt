@@ -258,6 +258,25 @@ async def student_analytics(student_id: str):
                     "email": mentor_row["email"],
                 }
 
+            # Get Student Rank
+            await cur.execute(
+                """SELECT COUNT(*) + 1 as rank FROM (
+                       SELECT u.id, COALESCE(AVG(s.score), 0) as avgScore
+                       FROM users u
+                       LEFT JOIN submissions s ON u.id = s.student_id
+                       WHERE u.role = 'student'
+                       GROUP BY u.id
+                   ) sub
+                   WHERE sub.avgScore > (
+                       SELECT COALESCE(AVG(s2.score), 0)
+                       FROM submissions s2
+                       WHERE s2.student_id = %s
+                   )""",
+                (student_id,)
+            )
+            rank_row = await cur.fetchone()
+            student_rank = rank_row["rank"] if rank_row else 0
+
     return {
         "completedTasks": completed_tasks,
         "totalTasks": total_tasks,
@@ -270,6 +289,7 @@ async def student_analytics(student_id: str):
         "recentSubmissions": recent_submissions,
         "leaderboard": leaderboard,
         "mentorInfo": mentor_info,
+        "studentRank": student_rank,
     }
 
 
@@ -289,34 +309,6 @@ async def mentor_analytics(mentor_id: str):
             student_rows = await cur.fetchall()
             student_ids = [r["id"] for r in student_rows]
             total_students = len(student_ids)
-
-            # Build allocated students with stats
-            allocated_students = []
-            for s in student_rows:
-                sid = s["id"]
-                await cur.execute(
-                    "SELECT COUNT(*) AS cnt FROM task_completions WHERE student_id = %s",
-                    (sid,),
-                )
-                tc = (await cur.fetchone())["cnt"]
-                await cur.execute(
-                    "SELECT COUNT(DISTINCT problem_id) AS cnt FROM submissions WHERE student_id = %s AND status = 'accepted'",
-                    (sid,),
-                )
-                pc = (await cur.fetchone())["cnt"]
-                await cur.execute(
-                    "SELECT AVG(score) AS avg FROM submissions WHERE student_id = %s",
-                    (sid,),
-                )
-                avg_row = await cur.fetchone()
-                avg_s = round(float(avg_row["avg"] or 0))
-                allocated_students.append({
-                    "id": sid,
-                    "name": s["name"],
-                    "tasksCompleted": tc,
-                    "problemsCompleted": pc,
-                    "avgScore": avg_s,
-                })
 
             # Submission counts for mentor's students
             if student_ids:
@@ -407,22 +399,6 @@ async def mentor_analytics(mentor_id: str):
                     for r in activity_rows
                 ]
 
-                # Top performers
-                await cur.execute(
-                    f"""SELECT u.name, COUNT(*) AS cnt, COALESCE(AVG(s.score), 0) AS avg
-                        FROM submissions s
-                        JOIN users u ON s.student_id = u.id
-                        WHERE s.student_id IN ({placeholders})
-                        GROUP BY s.student_id, u.name
-                        ORDER BY avg DESC
-                        LIMIT 5""",
-                    student_ids,
-                )
-                perf_rows = await cur.fetchall()
-                mentee_performance = [
-                    {"name": r["name"], "count": r["cnt"], "score": round(float(r["avg"]))}
-                    for r in perf_rows
-                ]
             else:
                 task_submissions = 0
                 code_submissions = 0
@@ -434,7 +410,6 @@ async def mentor_analytics(mentor_id: str):
                 ]
                 language_stats = [{"name": "Python", "value": 0}]
                 recent_activity = []
-                mentee_performance = []
 
             # Total content created by mentor
             await cur.execute(
@@ -458,7 +433,5 @@ async def mentor_analytics(mentor_id: str):
         "totalProblems": total_problems,
         "submissionTrends": submission_trends,
         "languageStats": language_stats,
-        "allocatedStudents": allocated_students,
         "recentActivity": recent_activity,
-        "menteePerformance": mentee_performance,
     }
