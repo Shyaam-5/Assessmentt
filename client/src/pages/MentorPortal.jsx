@@ -8,7 +8,7 @@ import AptitudeReportModal from '../components/AptitudeReportModal'
 import StudentReportModal from '../components/StudentReportModal'
 import TestCasesManager from '../components/TestCasesManager'
 import MentorLiveMonitoring from '../components/MentorLiveMonitoring'
-import DirectMessaging from '../components/DirectMessaging'
+
 import InlineCodeFeedback from '../components/InlineCodeFeedback'
 import FileUpload from '../components/FileUpload'
 import { useAuth } from '../App'
@@ -26,30 +26,12 @@ function MentorPortal() {
     const location = useLocation()
     const [title, setTitle] = useState('')
     const [subtitle, setSubtitle] = useState('')
-    const [unreadCount, setUnreadCount] = useState(0)
 
-    // Poll for unread messages
-    useEffect(() => {
-        const userId = user?.id || user?.userId
-        if (!userId) return
-        const fetchUnread = async () => {
-            try {
-                const res = await axios.get(`${API_BASE}/messages/unread/${userId}`)
-                setUnreadCount(res.data.unreadCount || 0)
-            } catch (e) { /* ignore */ }
-        }
-        fetchUnread()
-        const interval = setInterval(fetchUnread, 15000)
-        return () => clearInterval(interval)
-    }, [user])
 
     useEffect(() => {
         const path = location.pathname.split('/').pop()
         switch (path) {
-            case 'upload-tasks':
-                setTitle(t('upload_ml_tasks'))
-                setSubtitle(t('create_ml_tasks_subtitle'))
-                break
+
             case 'upload-problems':
                 setTitle(t('upload_problems'))
                 setSubtitle(t('create_problems_subtitle'))
@@ -87,7 +69,7 @@ function MentorPortal() {
             icon: <FileCode size={20} />,
             defaultExpanded: false,
             children: [
-                { path: '/mentor/upload-tasks', label: t('upload_ml_tasks'), icon: <Upload size={20} /> },
+
                 { path: '/mentor/upload-problems', label: t('upload_problems'), icon: <FileCode size={20} /> }
             ]
         },
@@ -101,21 +83,17 @@ function MentorPortal() {
                 { path: '/mentor/analytics', label: t('analytics'), icon: <TrendingUp size={20} /> },
                 { path: '/mentor/live-monitoring', label: t('live_monitoring'), icon: <Activity size={20} /> }
             ]
-        },
-        { path: '/mentor/messaging', label: 'Messaging', icon: <Mail size={20} />, badge: unreadCount }
-    ]
+        }]
 
     return (
         <DashboardLayout navItems={navItems} title={title} subtitle={subtitle}>
             <Routes>
                 <Route path="/" element={<Dashboard user={user} />} />
-                <Route path="/upload-tasks" element={<UploadTasks user={user} />} />
                 <Route path="/upload-problems" element={<UploadProblems user={user} />} />
                 <Route path="/leaderboard" element={<Leaderboard user={user} />} />
                 <Route path="/all-submissions" element={<AllSubmissions user={user} />} />
                 <Route path="/analytics" element={<MentorAnalytics user={user} />} />
                 <Route path="/live-monitoring" element={<MentorLiveMonitoring user={user} />} />
-                <Route path="/messaging" element={<DirectMessaging currentUser={user} />} />
             </Routes>
         </DashboardLayout>
     )

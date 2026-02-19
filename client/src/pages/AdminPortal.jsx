@@ -11,7 +11,7 @@ import LocalTestCasesManager from '../components/LocalTestCasesManager'
 import AdminLiveMonitoring from '../components/AdminLiveMonitoring'
 import AdminOperations from '../components/AdminOperations'
 import UserManagement from '../components/UserManagement'
-import DirectMessaging from '../components/DirectMessaging'
+
 import FileUpload from '../components/FileUpload'
 import SkillTestManager from '../components/SkillTestManager'
 import SkillSubmissions from '../components/SkillSubmissions'
@@ -33,21 +33,7 @@ function AdminPortal() {
     const location = useLocation()
     const [title, setTitle] = useState('')
     const [subtitle, setSubtitle] = useState('')
-    const [unreadCount, setUnreadCount] = useState(0)
 
-    // Poll for unread messages
-    useEffect(() => {
-        const userId = user?.id || user?.userId || ADMIN_ID
-        const fetchUnread = async () => {
-            try {
-                const res = await axios.get(`${API_BASE}/messages/unread/${userId}`)
-                setUnreadCount(res.data.unreadCount || 0)
-            } catch (e) { /* ignore */ }
-        }
-        fetchUnread()
-        const interval = setInterval(fetchUnread, 15000)
-        return () => clearInterval(interval)
-    }, [user])
 
     useEffect(() => {
         const path = location.pathname.split('/').pop()
@@ -68,10 +54,7 @@ function AdminPortal() {
                 setTitle(t('all_submissions'))
                 setSubtitle(t('platform_wide_submissions'))
                 break
-            case 'global-tasks':
-                setTitle(t('global_tasks'))
-                setSubtitle(t('tasks_visible_all'))
-                break
+
             case 'global-problems':
                 setTitle(t('global_problems'))
                 setSubtitle(t('coding_challenges_all'))
@@ -96,10 +79,7 @@ function AdminPortal() {
                 setTitle('User Management')
                 setSubtitle('Create, edit, and manage platform users')
                 break
-            case 'messaging':
-                setTitle('Messaging')
-                setSubtitle('Chat with students and mentors')
-                break
+
             case 'analytics':
                 setTitle(t('analytics'))
                 setSubtitle(t('advanced_analytics_subtitle'))
@@ -125,7 +105,6 @@ function AdminPortal() {
             icon: <FileCode size={20} />,
             defaultExpanded: false,
             children: [
-                { path: '/admin/global-tasks', label: t('global_tasks'), icon: <Globe size={20} /> },
                 { path: '/admin/global-problems', label: t('global_problems'), icon: <FileCode size={20} /> },
                 { path: '/admin/aptitude-tests', label: t('aptitude_tests'), icon: <Target size={20} /> },
                 { path: '/admin/global-tests', label: t('global_complete_tests'), icon: <ClipboardList size={20} /> },
@@ -158,9 +137,7 @@ function AdminPortal() {
             icon: <Settings size={20} />,
             defaultExpanded: false,
             children: [
-                { path: '/admin/operations', label: t('admin_operations'), icon: <Settings size={20} /> },
                 { path: '/admin/user-management', label: 'User Management', icon: <Shield size={20} /> },
-                { path: '/admin/messaging', label: 'Messaging', icon: <Mail size={20} />, badge: unreadCount }
             ]
         }
     ]
@@ -169,7 +146,6 @@ function AdminPortal() {
         <DashboardLayout navItems={navItems} title={title} subtitle={subtitle}>
             <Routes>
                 <Route path="/" element={<Dashboard />} />
-                <Route path="/global-tasks" element={<GlobalTasks />} />
                 <Route path="/global-problems" element={<GlobalProblems />} />
                 <Route path="/aptitude-tests" element={<AptitudeTestsAdmin />} />
                 <Route path="/global-tests" element={<GlobalTestsAdmin />} />
@@ -180,9 +156,7 @@ function AdminPortal() {
                 <Route path="/all-submissions" element={<AllSubmissions />} />
                 <Route path="/live-monitoring" element={<AdminLiveMonitoring user={user} />} />
                 <Route path="/analytics" element={<AdminAnalyticsDashboard />} />
-                <Route path="/operations" element={<AdminOperations />} />
                 <Route path="/user-management" element={<UserManagement />} />
-                <Route path="/messaging" element={<DirectMessaging currentUser={{ ...user, role: 'admin' }} />} />
             </Routes>
         </DashboardLayout>
     )
@@ -1240,14 +1214,14 @@ function MentorLeaderboard() {
 
 function AllSubmissions() {
     const [submissions, setSubmissions] = useState([])
-    const [mlTaskSubmissions, setMlTaskSubmissions] = useState([])
+
     const [aptitudeSubmissions, setAptitudeSubmissions] = useState([])
     const [globalSubmissions, setGlobalSubmissions] = useState([])
     const [loading, setLoading] = useState(true)
     const [searchTerm, setSearchTerm] = useState('')
     const [activeTab, setActiveTab] = useState('all')
     const [viewReport, setViewReport] = useState(null)
-    const [viewMLReport, setViewMLReport] = useState(null)
+
     const [viewAptitudeResult, setViewAptitudeResult] = useState(null)
     const [viewGlobalReport, setViewGlobalReport] = useState(null)
     const [resetting, setResetting] = useState(false)
@@ -1260,8 +1234,7 @@ function AllSubmissions() {
             axios.get(`${API_BASE}/global-test-submissions`)
         ]).then(([codeRes, aptRes, globalRes]) => {
             const codeData = Array.isArray(codeRes.data) ? codeRes.data : (codeRes.data?.data || [])
-            const mlTasks = codeData.filter(s => s.isMLTask).map(s => ({ ...s, subType: 'ml-task' }))
-            const codeSubs = codeData.filter(s => !s.isMLTask).map(s => ({ ...s, subType: 'code' }))
+            const codeSubs = codeData.map(s => ({ ...s, subType: 'code' }))
             const aptSubs = (aptRes.data || []).map(s => ({
                 ...s,
                 subType: 'aptitude',
@@ -1276,7 +1249,6 @@ function AllSubmissions() {
                 score: s.overallPercentage
             }))
             setSubmissions(codeSubs)
-            setMlTaskSubmissions(mlTasks)
             setAptitudeSubmissions(aptSubs)
             setGlobalSubmissions(globalSubs)
             setLoading(false)
@@ -1393,7 +1365,7 @@ function AllSubmissions() {
         }
     }
 
-    const allSubmissions = [...submissions, ...mlTaskSubmissions, ...aptitudeSubmissions, ...globalSubmissions]
+    const allSubmissions = [...submissions, ...aptitudeSubmissions, ...globalSubmissions]
         .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt))
 
     const getFilteredSubmissions = () => {
@@ -1401,11 +1373,9 @@ function AllSubmissions() {
             ? allSubmissions
             : activeTab === 'code'
                 ? submissions
-                : activeTab === 'ml-task'
-                    ? mlTaskSubmissions
-                    : activeTab === 'aptitude'
-                        ? aptitudeSubmissions
-                        : globalSubmissions
+                : activeTab === 'aptitude'
+                    ? aptitudeSubmissions
+                    : globalSubmissions
 
         return filtered.filter(s =>
             (s.studentName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1449,17 +1419,7 @@ function AllSubmissions() {
                                 fontSize: '0.85rem'
                             }}
                         >💻 Code ({submissions.length})</button>
-                        <button
-                            onClick={() => setActiveTab('ml-task')}
-                            style={{
-                                padding: '0.5rem 1rem',
-                                background: activeTab === 'ml-task' ? '#06b6d4' : 'transparent',
-                                border: 'none',
-                                color: activeTab === 'ml-task' ? 'white' : 'var(--text-muted)',
-                                cursor: 'pointer',
-                                fontSize: '0.85rem'
-                            }}
-                        >🧠 ML Tasks ({mlTaskSubmissions.length})</button>
+
                         <button
                             onClick={() => setActiveTab('aptitude')}
                             style={{
@@ -1586,7 +1546,7 @@ function AllSubmissions() {
                                         background: sub.subType === 'aptitude' ? 'rgba(139, 92, 246, 0.1)' : 'rgba(59, 130, 246, 0.1)',
                                         color: sub.subType === 'ml-task' ? '#06b6d4' : sub.subType === 'aptitude' ? '#8b5cf6' : 'var(--primary)'
                                     }}>
-                                        {sub.subType === 'ml-task' ? '🧠 ML Task' : sub.subType === 'aptitude' ? '📝 Aptitude' : sub.subType === 'global' ? '🌐 Global' : '💻 Code'}
+                                        {sub.subType === 'aptitude' ? '📝 Aptitude' : sub.subType === 'global' ? '🌐 Global' : '💻 Code'}
                                     </span>
                                 </td>
                                 <td>
@@ -1691,24 +1651,6 @@ function AllSubmissions() {
                                         >
                                             <Eye size={14} /> Full Report
                                         </button>
-                                    ) : sub.subType === 'ml-task' ? (
-                                        <button
-                                            onClick={() => setViewMLReport(sub)}
-                                            style={{
-                                                background: 'rgba(6, 182, 212, 0.1)',
-                                                border: 'none',
-                                                color: '#06b6d4',
-                                                padding: '0.4rem 0.75rem',
-                                                borderRadius: '6px',
-                                                cursor: 'pointer',
-                                                fontSize: '0.8rem',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: '4px'
-                                            }}
-                                        >
-                                            <Eye size={14} /> ML Report
-                                        </button>
                                     ) : (
                                         <button
                                             onClick={() => setViewReport(sub)}
@@ -1748,7 +1690,7 @@ function AllSubmissions() {
                 />
             )}
 
-            {viewMLReport && <AdminMLReportModal submission={viewMLReport} onClose={() => setViewMLReport(null)} />}
+
 
             {viewReport && (
                 <AdminSubmissionReportModal

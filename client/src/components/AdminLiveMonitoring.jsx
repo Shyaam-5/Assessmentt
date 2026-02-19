@@ -28,7 +28,7 @@ function AdminLiveMonitoring({ user }) {
         // Listen for live updates (all mentors/students)
         socketService.onLiveUpdate((update) => {
             setLiveUpdates(prev => [update, ...prev.slice(0, 99)]) // Keep last 100 updates
-            
+
             // Update stats
             setStats(prev => {
                 const newStudents = prev.totalStudentsActive.includes(update.studentId)
@@ -55,7 +55,7 @@ function AdminLiveMonitoring({ user }) {
         // Listen for live alerts
         socketService.onLiveAlert((alert) => {
             setLiveAlerts(prev => [alert, ...prev.slice(0, 49)]) // Keep last 50 alerts
-            
+
             // Update alert stats
             setStats(prev => ({
                 ...prev,
@@ -86,10 +86,10 @@ function AdminLiveMonitoring({ user }) {
     }
 
     const formatTime = (date) => {
-        return new Date(date).toLocaleTimeString('en-US', { 
-            hour: '2-digit', 
-            minute: '2-digit', 
-            second: '2-digit' 
+        return new Date(date).toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
         })
     }
 
@@ -137,7 +137,7 @@ function AdminLiveMonitoring({ user }) {
                         <AlertTriangle size={20} className="text-red-500" />
                         Critical Alerts ({stats.criticalAlerts})
                     </h3>
-                    
+
                     <div className="alerts-list admin-alerts">
                         {liveAlerts.filter(a => a.severity === 'critical').length === 0 ? (
                             <div className="empty-state">No critical alerts</div>
@@ -145,8 +145,8 @@ function AdminLiveMonitoring({ user }) {
                             liveAlerts
                                 .filter(a => a.severity === 'critical')
                                 .map((alert, idx) => (
-                                    <div 
-                                        key={idx} 
+                                    <div
+                                        key={idx}
                                         className="alert-item severity-critical"
                                     >
                                         <div className="alert-header">
@@ -169,14 +169,14 @@ function AdminLiveMonitoring({ user }) {
                         <AlertTriangle size={20} className="text-orange-500" />
                         All Alerts ({liveAlerts.length})
                     </h3>
-                    
+
                     <div className="alerts-list admin-alerts">
                         {liveAlerts.length === 0 ? (
                             <div className="empty-state">No alerts</div>
                         ) : (
                             liveAlerts.map((alert, idx) => (
-                                <div 
-                                    key={idx} 
+                                <div
+                                    key={idx}
                                     className={`alert-item severity-${alert.severity}`}
                                 >
                                     <div className="alert-header">
@@ -203,7 +203,7 @@ function AdminLiveMonitoring({ user }) {
                     <Activity size={20} className="text-blue-500" />
                     Global Activity Feed ({liveUpdates.length})
                 </h3>
-                
+
                 <div className="updates-list admin-updates">
                     {liveUpdates.length === 0 ? (
                         <div className="empty-state">Waiting for activity...</div>
@@ -217,14 +217,14 @@ function AdminLiveMonitoring({ user }) {
                                     <div className="update-title">
                                         {update.type === 'submission_started' && (
                                             <span>
-                                                <strong>{update.studentName || `Student ${update.studentId}`}</strong> started 
+                                                <strong>{update.studentName || `Student ${update.studentId}`}</strong> started
                                                 <strong> {update.problemTitle}</strong>
                                                 {update.isProctored && <span className="badge-proctored">Proctored</span>}
                                             </span>
                                         )}
                                         {update.type === 'submission_completed' && (
                                             <span>
-                                                <strong>{update.studentName || `Student ${update.studentId}`}</strong> completed 
+                                                <strong>{update.studentName || `Student ${update.studentId}`}</strong> completed
                                                 <strong> {update.problemTitle}</strong>
                                                 <span className={`badge-status status-${update.status}`}>
                                                     {update.status}
@@ -233,7 +233,7 @@ function AdminLiveMonitoring({ user }) {
                                         )}
                                         {update.type === 'progress_update' && (
                                             <span>
-                                                <strong>{update.studentName || `Student ${update.studentId}`}</strong> - 
+                                                <strong>{update.studentName || `Student ${update.studentId}`}</strong> -
                                                 <strong> {update.problemId}</strong>
                                                 <span className="badge-progress">
                                                     {update.progress}%

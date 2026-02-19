@@ -126,6 +126,9 @@ from routes.chat import router as chat_router
 from routes.messaging import router as messaging_router
 from routes.analytics import router as analytics_router
 from routes.skill_tests import router as skill_tests_router
+from routes.aptitude import router as aptitude_router
+from routes.global_tests import router as global_tests_router
+from routes.admin import router as admin_router
 
 app.include_router(auth_router)
 app.include_router(tasks_router)
@@ -138,6 +141,9 @@ app.include_router(messaging_router)
 app.include_router(analytics_router)
 app.include_router(skill_tests_router)
 app.include_router(leaderboard_router)
+app.include_router(aptitude_router)
+app.include_router(global_tests_router)
+app.include_router(admin_router)
 
 
 # ─── Health check ────────────────────────────────────────────────

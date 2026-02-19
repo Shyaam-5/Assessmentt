@@ -10,7 +10,7 @@ import CodeOutputPreview from '@/components/CodeOutputPreview'
 import SQLValidator from '@/components/SQLValidator'
 import SQLVisualizer from '@/components/SQLVisualizer'
 import SQLDebugger from '@/components/SQLDebugger'
-import DirectMessaging from '@/components/DirectMessaging'
+
 import SkillTestPortal from '@/components/SkillTestPortal'
 import SkillSubmissions from '@/components/SkillSubmissions'
 import { useAuth } from '../App'
@@ -39,22 +39,7 @@ function StudentPortal() {
     const [title, setTitle] = useState('')
     const [subtitle, setSubtitle] = useState('')
     const [mentorInfo, setMentorInfo] = useState(null)
-    const [unreadCount, setUnreadCount] = useState(0)
 
-    // Poll for unread messages
-    useEffect(() => {
-        const userId = user?.id || user?.userId
-        if (!userId) return
-        const fetchUnread = async () => {
-            try {
-                const res = await axios.get(`${API_BASE}/messages/unread/${userId}`)
-                setUnreadCount(res.data.unreadCount || 0)
-            } catch (e) { /* ignore */ }
-        }
-        fetchUnread()
-        const interval = setInterval(fetchUnread, 15000)
-        return () => clearInterval(interval)
-    }, [user])
 
     // Fetch mentor info once
     useEffect(() => {
@@ -72,10 +57,7 @@ function StudentPortal() {
     useEffect(() => {
         const path = location.pathname.split('/').pop()
         switch (path) {
-            case 'tasks':
-                setTitle(t('ml_tasks'))
-                setSubtitle(t('ml_tasks_subtitle'))
-                break
+
             case 'assignments':
                 setTitle(t('coding_problems'))
                 setSubtitle(t('solve_coding_subtitle'))
@@ -96,10 +78,7 @@ function StudentPortal() {
                 setTitle(t('my_analytics'))
                 setSubtitle(t('analytics_subtitle'))
                 break
-            case 'messaging':
-                setTitle('Messages')
-                setSubtitle('Chat with your mentor')
-                break
+
             case 'skill-tests':
                 setTitle('Skill Tests')
                 setSubtitle('AI-powered skill assessments')
@@ -121,7 +100,6 @@ function StudentPortal() {
             icon: <ClipboardList size={20} />,
             defaultExpanded: false,
             children: [
-                { path: '/student/tasks', label: t('ml_tasks'), icon: <ClipboardList size={20} /> },
                 { path: '/student/assignments', label: t('coding_problems'), icon: <Code size={20} /> },
                 { path: '/student/aptitude', label: t('aptitude_tests'), icon: <Brain size={20} /> },
                 { path: '/student/global-tests', label: t('global_complete_tests'), icon: <Layers size={20} /> },
@@ -138,14 +116,12 @@ function StudentPortal() {
                 { path: '/student/analytics', label: t('my_analytics'), icon: <TrendingUp size={20} /> }
             ]
         },
-        { path: '/student/messaging', label: 'Messages', icon: <MessageSquare size={20} />, badge: unreadCount }
     ]
 
     return (
         <DashboardLayout navItems={navItems} title={title} subtitle={subtitle} mentorInfo={mentorInfo}>
             <Routes>
                 <Route path="/" element={<Dashboard user={user} />} />
-                <Route path="/tasks" element={<Tasks user={user} />} />
                 <Route path="/assignments" element={<Assignments user={user} />} />
                 <Route path="/aptitude" element={<AptitudeTests user={user} />} />
                 <Route path="/global-tests" element={<GlobalTests user={user} />} />
@@ -153,7 +129,6 @@ function StudentPortal() {
                 <Route path="/skill-submissions" element={<SkillSubmissions user={user} />} />
                 <Route path="/submissions" element={<Submissions user={user} />} />
                 <Route path="/analytics" element={<StudentAnalytics user={user} />} />
-                <Route path="/messaging" element={<DirectMessaging currentUser={user} />} />
             </Routes>
         </DashboardLayout>
     )
@@ -273,19 +248,6 @@ function Dashboard({ user }) {
                     </h3>
 
                     <div className="skill-progress-container">
-                        {/* Task Skills */}
-                        <div className="skill-item">
-                            <div className="skill-header">
-                                <span className="skill-name">ML Tasks</span>
-                                <span className="skill-count" style={{ color: '#3b82f6' }}>{stats.completedTasks}/{stats.totalTasks}</span>
-                            </div>
-                            <div className="skill-bar" style={{ background: 'rgba(59, 130, 246, 0.15)' }}>
-                                <div className="skill-fill" style={{
-                                    width: `${stats.totalTasks > 0 ? (stats.completedTasks / stats.totalTasks) * 100 : 0}%`,
-                                    background: 'linear-gradient(90deg, #2563eb, #3b82f6)'
-                                }} />
-                            </div>
-                        </div>
 
                         {/* Coding Skills */}
                         <div className="skill-item">
@@ -1793,12 +1755,12 @@ function CodeEditorModal({ problem, user, onClose }) {
 // ==================== SUBMISSIONS WITH REPORT & DELETE ====================
 function Submissions({ user }) {
     const [submissions, setSubmissions] = useState([])
-    const [mlTaskSubmissions, setMlTaskSubmissions] = useState([])
+
     const [aptitudeSubmissions, setAptitudeSubmissions] = useState([])
     const [globalSubmissions, setGlobalSubmissions] = useState([])
     const [loading, setLoading] = useState(true)
     const [viewReport, setViewReport] = useState(null)
-    const [viewMLReport, setViewMLReport] = useState(null)
+
     const [activeTab, setActiveTab] = useState('all')
     const [viewAptitudeResult, setViewAptitudeResult] = useState(null)
     const [viewGlobalReport, setViewGlobalReport] = useState(null)
@@ -1812,10 +1774,8 @@ function Submissions({ user }) {
             axios.get(`${API_BASE}/global-test-submissions?studentId=${user.id}`)
         ]).then(([codeRes, aptRes, globalRes]) => {
             const codeData = Array.isArray(codeRes.data) ? codeRes.data : (codeRes.data?.data || [])
-            const mlTasks = codeData.filter(s => s.isMLTask).map(s => ({ ...s, subType: 'ml-task' }))
-            const codeSubs = codeData.filter(s => !s.isMLTask).map(s => ({ ...s, subType: 'code' }))
+            const codeSubs = codeData.map(s => ({ ...s, subType: 'code' }))
             setSubmissions(codeSubs)
-            setMlTaskSubmissions(mlTasks)
             setAptitudeSubmissions((aptRes.data || []).map(s => ({ ...s, subType: 'aptitude', itemTitle: s.testTitle })))
             setGlobalSubmissions((globalRes.data || []).map(s => ({
                 ...s,
@@ -1848,7 +1808,7 @@ function Submissions({ user }) {
         }
     }
 
-    const allSubmissions = [...submissions, ...mlTaskSubmissions, ...aptitudeSubmissions, ...globalSubmissions]
+    const allSubmissions = [...submissions, ...aptitudeSubmissions, ...globalSubmissions]
         .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt))
 
     const getFilteredSubmissions = () => {
@@ -1856,11 +1816,9 @@ function Submissions({ user }) {
             ? allSubmissions
             : activeTab === 'code'
                 ? submissions
-                : activeTab === 'ml-task'
-                    ? mlTaskSubmissions
-                    : activeTab === 'aptitude'
-                        ? aptitudeSubmissions
-                        : globalSubmissions
+                : activeTab === 'aptitude'
+                    ? aptitudeSubmissions
+                    : globalSubmissions
 
         return filtered.filter(s =>
             (s.itemTitle || s.testTitle || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1901,18 +1859,7 @@ function Submissions({ user }) {
                             fontWeight: 500
                         }}
                     >💻 Code ({submissions.length})</button>
-                    <button
-                        onClick={() => setActiveTab('ml-task')}
-                        style={{
-                            padding: '0.6rem 1.2rem',
-                            background: activeTab === 'ml-task' ? '#06b6d4' : 'rgba(6, 182, 212, 0.1)',
-                            border: activeTab === 'ml-task' ? 'none' : '1px solid var(--border-color)',
-                            borderRadius: '8px',
-                            color: activeTab === 'ml-task' ? 'white' : 'var(--text-muted)',
-                            cursor: 'pointer',
-                            fontWeight: 500
-                        }}
-                    >🧠 ML Tasks ({mlTaskSubmissions.length})</button>
+
                     <button
                         onClick={() => setActiveTab('aptitude')}
                         style={{
@@ -1977,7 +1924,7 @@ function Submissions({ user }) {
                                             background: sub.subType === 'ml-task' ? 'rgba(6, 182, 212, 0.1)' : sub.subType === 'aptitude' ? 'rgba(139, 92, 246, 0.1)' : 'var(--primary-alpha)',
                                             color: sub.subType === 'ml-task' ? '#06b6d4' : sub.subType === 'aptitude' ? '#8b5cf6' : 'var(--primary)'
                                         }}>
-                                            {sub.subType === 'ml-task' ? '🧠 ML Task' : sub.subType === 'aptitude' ? '📝 Aptitude' : sub.subType === 'global' ? '🌐 Global' : '💻 Code'}
+                                            {sub.subType === 'aptitude' ? '📝 Aptitude' : sub.subType === 'global' ? '🌐 Global' : '💻 Code'}
                                         </span>
                                     </td>
                                     <td><div style={{ color: 'var(--primary)', fontWeight: 500 }}>{sub.itemTitle || sub.testTitle}</div></td>
@@ -2052,11 +1999,7 @@ function Submissions({ user }) {
                                                     <button onClick={() => setViewGlobalReport(sub.id)} style={{ background: 'var(--primary-alpha)', border: 'none', color: 'var(--primary)', padding: '0.4rem 0.75rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}><Eye size={14} /> Full Report</button>
                                                     <button onClick={() => handleDelete(sub)} style={{ background: 'var(--danger-alpha)', border: 'none', color: 'var(--danger)', padding: '0.4rem 0.75rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem' }}><Trash2 size={14} /></button>
                                                 </>
-                                            ) : sub.subType === 'ml-task' ? (
-                                                <>
-                                                    <button onClick={() => setViewMLReport(sub)} style={{ background: 'rgba(6, 182, 212, 0.1)', border: 'none', color: '#06b6d4', padding: '0.4rem 0.75rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}><Eye size={14} /> ML Report</button>
-                                                    <button onClick={() => handleDelete(sub)} style={{ background: 'var(--danger-alpha)', border: 'none', color: 'var(--danger)', padding: '0.4rem 0.75rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem' }}><Trash2 size={14} /></button>
-                                                </>
+
                                             ) : (
                                                 <>
                                                     <button onClick={() => setViewReport(sub)} style={{ background: 'var(--primary-alpha)', border: 'none', color: 'var(--primary)', padding: '0.4rem 0.75rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}><Eye size={14} /> Report</button>
@@ -2073,8 +2016,7 @@ function Submissions({ user }) {
             </div>
             {viewReport && <SubmissionReportModal submission={viewReport} user={user} onClose={() => setViewReport(null)} />}
 
-            {/* ML Task Report Modal */}
-            {viewMLReport && <MLTaskReportModal submission={viewMLReport} onClose={() => setViewMLReport(null)} />}
+
 
             {/* Aptitude Results Modal */}
             {viewAptitudeResult && (
