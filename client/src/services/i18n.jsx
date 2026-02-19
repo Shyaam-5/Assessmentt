@@ -128,7 +128,7 @@ const translations = {
         global_live_monitoring: 'Global Live Monitoring',
         monitor_all_subtitle: 'Monitor all mentors, students, and proctoring alerts',
         admin_ops_subtitle: 'Bulk operations, backups, exports, audit logs & system health',
-        upload_ml_tasks: 'Upload ML Tasks',
+
         ml_tasks: 'ML Tasks',
         create_ml_tasks_subtitle: 'Create machine learning tasks for students',
         create_problems_subtitle: 'Create coding/SQL problems',
@@ -342,7 +342,7 @@ const translations = {
         global_live_monitoring: 'உலகளாவிய நேரடி கண்காணிப்பு',
         monitor_all_subtitle: 'அனைத்து வழிகாட்டிகள், மாணவர்கள் மற்றும் கண்காணிப்பு எச்சரிக்கைகளை கண்காணிக்கவும்',
         admin_ops_subtitle: 'மொத்த செயல்பாடுகள், காப்புப்பிரதிகள், ஏற்றுமதிகள், தணிக்கை பதிவுகள் & கணினி ஆரோக்கியம்',
-        upload_ml_tasks: 'ML பணிகளை பதிவேற்று',
+
         ml_tasks: 'ML பணிகள்',
         create_ml_tasks_subtitle: 'மாணவர்களுக்கு இயந்திர கற்றல் பணிகளை உருவாக்கவும்',
         create_problems_subtitle: 'குறியீடு/SQL சிக்கல்களை உருவாக்கவும்',
@@ -552,7 +552,7 @@ const translations = {
         global_live_monitoring: 'वैश्विक लाइव मॉनिटरिंग',
         monitor_all_subtitle: 'सभी मेंटर, छात्रों और प्रॉक्टरिंग अलर्ट की निगरानी करें',
         admin_ops_subtitle: 'बल्क ऑपरेशन, बैकअप, निर्यात, ऑडिट लॉग और सिस्टम स्वास्थ्य',
-        upload_ml_tasks: 'ML कार्य अपलोड करें',
+
         ml_tasks: 'ML कार्य',
         create_ml_tasks_subtitle: 'छात्रों के लिए मशीन लर्निंग कार्य बनाएं',
         create_problems_subtitle: 'कोडिंग/SQL समस्याएं बनाएं',

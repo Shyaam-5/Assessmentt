@@ -11,7 +11,7 @@ import LocalTestCasesManager from '../components/LocalTestCasesManager'
 import AdminLiveMonitoring from '../components/AdminLiveMonitoring'
 import AdminOperations from '../components/AdminOperations'
 import UserManagement from '../components/UserManagement'
-import DirectMessaging from '../components/DirectMessaging'
+
 import FileUpload from '../components/FileUpload'
 import SkillTestManager from '../components/SkillTestManager'
 import SkillSubmissions from '../components/SkillSubmissions'
@@ -33,21 +33,7 @@ function AdminPortal() {
     const location = useLocation()
     const [title, setTitle] = useState('')
     const [subtitle, setSubtitle] = useState('')
-    const [unreadCount, setUnreadCount] = useState(0)
 
-    // Poll for unread messages
-    useEffect(() => {
-        const userId = user?.id || user?.userId || ADMIN_ID
-        const fetchUnread = async () => {
-            try {
-                const res = await axios.get(`${API_BASE}/messages/unread/${userId}`)
-                setUnreadCount(res.data.unreadCount || 0)
-            } catch (e) { /* ignore */ }
-        }
-        fetchUnread()
-        const interval = setInterval(fetchUnread, 15000)
-        return () => clearInterval(interval)
-    }, [user])
 
     useEffect(() => {
         const path = location.pathname.split('/').pop()
@@ -68,10 +54,7 @@ function AdminPortal() {
                 setTitle(t('all_submissions'))
                 setSubtitle(t('platform_wide_submissions'))
                 break
-            case 'global-tasks':
-                setTitle(t('global_tasks'))
-                setSubtitle(t('tasks_visible_all'))
-                break
+
             case 'global-problems':
                 setTitle(t('global_problems'))
                 setSubtitle(t('coding_challenges_all'))
@@ -96,10 +79,7 @@ function AdminPortal() {
                 setTitle('User Management')
                 setSubtitle('Create, edit, and manage platform users')
                 break
-            case 'messaging':
-                setTitle('Messaging')
-                setSubtitle('Chat with students and mentors')
-                break
+
             case 'analytics':
                 setTitle(t('analytics'))
                 setSubtitle(t('advanced_analytics_subtitle'))
@@ -125,7 +105,6 @@ function AdminPortal() {
             icon: <FileCode size={20} />,
             defaultExpanded: false,
             children: [
-                { path: '/admin/global-tasks', label: t('global_tasks'), icon: <Globe size={20} /> },
                 { path: '/admin/global-problems', label: t('global_problems'), icon: <FileCode size={20} /> },
                 { path: '/admin/aptitude-tests', label: t('aptitude_tests'), icon: <Target size={20} /> },
                 { path: '/admin/global-tests', label: t('global_complete_tests'), icon: <ClipboardList size={20} /> },
@@ -158,9 +137,7 @@ function AdminPortal() {
             icon: <Settings size={20} />,
             defaultExpanded: false,
             children: [
-                { path: '/admin/operations', label: t('admin_operations'), icon: <Settings size={20} /> },
                 { path: '/admin/user-management', label: 'User Management', icon: <Shield size={20} /> },
-                { path: '/admin/messaging', label: 'Messaging', icon: <Mail size={20} />, badge: unreadCount }
             ]
         }
     ]
@@ -169,7 +146,6 @@ function AdminPortal() {
         <DashboardLayout navItems={navItems} title={title} subtitle={subtitle}>
             <Routes>
                 <Route path="/" element={<Dashboard />} />
-                <Route path="/global-tasks" element={<GlobalTasks />} />
                 <Route path="/global-problems" element={<GlobalProblems />} />
                 <Route path="/aptitude-tests" element={<AptitudeTestsAdmin />} />
                 <Route path="/global-tests" element={<GlobalTestsAdmin />} />
@@ -180,9 +156,7 @@ function AdminPortal() {
                 <Route path="/all-submissions" element={<AllSubmissions />} />
                 <Route path="/live-monitoring" element={<AdminLiveMonitoring user={user} />} />
                 <Route path="/analytics" element={<AdminAnalyticsDashboard />} />
-                <Route path="/operations" element={<AdminOperations />} />
                 <Route path="/user-management" element={<UserManagement />} />
-                <Route path="/messaging" element={<DirectMessaging currentUser={{ ...user, role: 'admin' }} />} />
             </Routes>
         </DashboardLayout>
     )
@@ -498,7 +472,8 @@ function Dashboard() {
                         fontSize: '0.75rem',
                         color: 'var(--text-muted)'
                     }}>
-                        Tasks, Problems & Tests
+                        {/* Tasks, Problems & Tests */}
+                        Problems & Tests
                     </div>
                 </div>
 
@@ -1240,14 +1215,14 @@ function MentorLeaderboard() {
 
 function AllSubmissions() {
     const [submissions, setSubmissions] = useState([])
-    const [mlTaskSubmissions, setMlTaskSubmissions] = useState([])
+
     const [aptitudeSubmissions, setAptitudeSubmissions] = useState([])
     const [globalSubmissions, setGlobalSubmissions] = useState([])
     const [loading, setLoading] = useState(true)
     const [searchTerm, setSearchTerm] = useState('')
     const [activeTab, setActiveTab] = useState('all')
     const [viewReport, setViewReport] = useState(null)
-    const [viewMLReport, setViewMLReport] = useState(null)
+
     const [viewAptitudeResult, setViewAptitudeResult] = useState(null)
     const [viewGlobalReport, setViewGlobalReport] = useState(null)
     const [resetting, setResetting] = useState(false)
@@ -1260,8 +1235,7 @@ function AllSubmissions() {
             axios.get(`${API_BASE}/global-test-submissions`)
         ]).then(([codeRes, aptRes, globalRes]) => {
             const codeData = Array.isArray(codeRes.data) ? codeRes.data : (codeRes.data?.data || [])
-            const mlTasks = codeData.filter(s => s.isMLTask).map(s => ({ ...s, subType: 'ml-task' }))
-            const codeSubs = codeData.filter(s => !s.isMLTask).map(s => ({ ...s, subType: 'code' }))
+            const codeSubs = codeData.map(s => ({ ...s, subType: 'code' }))
             const aptSubs = (aptRes.data || []).map(s => ({
                 ...s,
                 subType: 'aptitude',
@@ -1276,7 +1250,6 @@ function AllSubmissions() {
                 score: s.overallPercentage
             }))
             setSubmissions(codeSubs)
-            setMlTaskSubmissions(mlTasks)
             setAptitudeSubmissions(aptSubs)
             setGlobalSubmissions(globalSubs)
             setLoading(false)
@@ -1363,7 +1336,6 @@ function AllSubmissions() {
             '• All code submissions\n' +
             '• All aptitude test submissions\n' +
             '• All problem completions\n' +
-            '• All task completions\n\n' +
             'This action CANNOT be undone. Are you sure?'
         )
 
@@ -1393,7 +1365,7 @@ function AllSubmissions() {
         }
     }
 
-    const allSubmissions = [...submissions, ...mlTaskSubmissions, ...aptitudeSubmissions, ...globalSubmissions]
+    const allSubmissions = [...submissions, ...aptitudeSubmissions, ...globalSubmissions]
         .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt))
 
     const getFilteredSubmissions = () => {
@@ -1401,11 +1373,9 @@ function AllSubmissions() {
             ? allSubmissions
             : activeTab === 'code'
                 ? submissions
-                : activeTab === 'ml-task'
-                    ? mlTaskSubmissions
-                    : activeTab === 'aptitude'
-                        ? aptitudeSubmissions
-                        : globalSubmissions
+                : activeTab === 'aptitude'
+                    ? aptitudeSubmissions
+                    : globalSubmissions
 
         return filtered.filter(s =>
             (s.studentName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1449,17 +1419,7 @@ function AllSubmissions() {
                                 fontSize: '0.85rem'
                             }}
                         >💻 Code ({submissions.length})</button>
-                        <button
-                            onClick={() => setActiveTab('ml-task')}
-                            style={{
-                                padding: '0.5rem 1rem',
-                                background: activeTab === 'ml-task' ? '#06b6d4' : 'transparent',
-                                border: 'none',
-                                color: activeTab === 'ml-task' ? 'white' : 'var(--text-muted)',
-                                cursor: 'pointer',
-                                fontSize: '0.85rem'
-                            }}
-                        >🧠 ML Tasks ({mlTaskSubmissions.length})</button>
+
                         <button
                             onClick={() => setActiveTab('aptitude')}
                             style={{
@@ -1584,9 +1544,9 @@ function AllSubmissions() {
                                         padding: '2px 8px',
                                         borderRadius: '4px',
                                         background: sub.subType === 'aptitude' ? 'rgba(139, 92, 246, 0.1)' : 'rgba(59, 130, 246, 0.1)',
-                                        color: sub.subType === 'ml-task' ? '#06b6d4' : sub.subType === 'aptitude' ? '#8b5cf6' : 'var(--primary)'
+                                        color: sub.subType === 'aptitude' ? '#8b5cf6' : 'var(--primary)'
                                     }}>
-                                        {sub.subType === 'ml-task' ? '🧠 ML Task' : sub.subType === 'aptitude' ? '📝 Aptitude' : sub.subType === 'global' ? '🌐 Global' : '💻 Code'}
+                                        {sub.subType === 'aptitude' ? '📝 Aptitude' : sub.subType === 'global' ? '🌐 Global' : '💻 Code'}
                                     </span>
                                 </td>
                                 <td>
@@ -1691,24 +1651,6 @@ function AllSubmissions() {
                                         >
                                             <Eye size={14} /> Full Report
                                         </button>
-                                    ) : sub.subType === 'ml-task' ? (
-                                        <button
-                                            onClick={() => setViewMLReport(sub)}
-                                            style={{
-                                                background: 'rgba(6, 182, 212, 0.1)',
-                                                border: 'none',
-                                                color: '#06b6d4',
-                                                padding: '0.4rem 0.75rem',
-                                                borderRadius: '6px',
-                                                cursor: 'pointer',
-                                                fontSize: '0.8rem',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: '4px'
-                                            }}
-                                        >
-                                            <Eye size={14} /> ML Report
-                                        </button>
                                     ) : (
                                         <button
                                             onClick={() => setViewReport(sub)}
@@ -1748,7 +1690,7 @@ function AllSubmissions() {
                 />
             )}
 
-            {viewMLReport && <AdminMLReportModal submission={viewMLReport} onClose={() => setViewMLReport(null)} />}
+
 
             {viewReport && (
                 <AdminSubmissionReportModal
@@ -1760,173 +1702,7 @@ function AllSubmissions() {
     )
 }
 
-// ==================== ADMIN ML REPORT MODAL ====================
-function AdminMLReportModal({ submission, onClose }) {
-    const isGithub = (submission.submissionType || '').includes('github')
 
-    const parseMetricScore = (str) => {
-        if (!str || str === 'N/A') return null
-        const match = str.match(/(\d+)/)
-        return match ? parseInt(match[1]) : null
-    }
-
-    const metrics = [
-        { label: 'Correctness', value: parseMetricScore(submission.analysis?.correctness), color: '#3b82f6' },
-        { label: 'Code Quality', value: parseMetricScore(submission.analysis?.efficiency), color: '#8b5cf6' },
-        { label: 'Documentation', value: parseMetricScore(submission.analysis?.codeStyle), color: '#06b6d4' },
-        { label: 'Model Performance', value: parseMetricScore(submission.analysis?.bestPractices), color: '#10b981' }
-    ].filter(m => m.value !== null)
-
-    return (
-        <div className="modal-overlay" onClick={onClose}>
-            <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '800px', maxHeight: '90vh', overflowY: 'auto' }}>
-                <div className="modal-header">
-                    <div className="modal-title-with-icon">
-                        <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: 'linear-gradient(135deg, #06b6d4, #0891b2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            <Brain size={20} color="white" />
-                        </div>
-                        <div>
-                            <span style={{ fontSize: '0.7rem', color: '#06b6d4', textTransform: 'uppercase', fontWeight: 600 }}>ML Task Report</span>
-                            <h2 style={{ margin: 0, fontSize: '1.1rem' }}>{submission.itemTitle || 'ML Task'}</h2>
-                        </div>
-                    </div>
-                    <button onClick={onClose} className="modal-close"><XCircle size={20} /></button>
-                </div>
-                <div className="modal-body" style={{ padding: '1.5rem' }}>
-                    {/* Student Info */}
-                    <div style={{
-                        marginBottom: '1.5rem', padding: '1rem',
-                        background: 'var(--bg-tertiary)', borderRadius: '0.5rem',
-                        border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'space-between'
-                    }}>
-                        <div>
-                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Student Name</span>
-                            <div style={{ fontWeight: 600, fontSize: '1rem' }}>{submission.studentName}</div>
-                        </div>
-                        <div style={{ textAlign: 'right' }}>
-                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Submitted On</span>
-                            <div style={{ fontWeight: 500 }}>{new Date(submission.submittedAt).toLocaleString()}</div>
-                        </div>
-                    </div>
-
-                    {/* Score & Status Header */}
-                    <div style={{
-                        display: 'flex', alignItems: 'center', gap: '2rem', marginBottom: '2rem',
-                        padding: '1.5rem', borderRadius: '1rem',
-                        background: submission.status === 'accepted' ? 'rgba(16, 185, 129, 0.05)' : 'rgba(239, 68, 68, 0.05)',
-                        border: `1px solid ${submission.status === 'accepted' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)'}`
-                    }}>
-                        <div style={{
-                            width: '90px', height: '90px', borderRadius: '50%',
-                            background: `conic-gradient(${submission.score >= 80 ? '#10b981' : submission.score >= 60 ? '#f59e0b' : '#ef4444'} ${(submission.score || 0) * 3.6}deg, rgba(255,255,255,0.05) 0deg)`,
-                            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
-                        }}>
-                            <div style={{ width: '76px', height: '76px', borderRadius: '50%', background: 'var(--bg-card)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
-                                <span style={{ fontSize: '1.6rem', fontWeight: 800, color: 'var(--text-main)' }}>{submission.score}</span>
-                                <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>SCORE</span>
-                            </div>
-                        </div>
-                        <div>
-                            <div style={{
-                                display: 'inline-flex', alignItems: 'center', gap: '0.5rem',
-                                padding: '0.4rem 1rem', borderRadius: '2rem', marginBottom: '0.5rem',
-                                background: submission.status === 'accepted' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                                color: submission.status === 'accepted' ? '#10b981' : '#ef4444',
-                                fontWeight: 700, fontSize: '0.9rem'
-                            }}>
-                                {submission.status === 'accepted' ? <CheckCircle size={16} /> : <XCircle size={16} />}
-                                {(submission.status || 'pending').toUpperCase()}
-                            </div>
-                            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', color: '#06b6d4', fontWeight: 600 }}>
-                                    {isGithub ? '🔗 GitHub Submission' : '📁 File Upload'}
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Metrics */}
-                    {metrics.length > 0 && (
-                        <div style={{ marginBottom: '2rem' }}>
-                            <h4 style={{ margin: '0 0 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-main)' }}>
-                                <BarChart3 size={18} color="#06b6d4" /> Performance Metrics
-                            </h4>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem' }}>
-                                {metrics.map(m => (
-                                    <div key={m.label} style={{ background: 'var(--bg-dark)', padding: '1rem', borderRadius: '0.75rem', border: '1px solid var(--border-color)' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{m.label}</span>
-                                            <span style={{ fontWeight: 700, color: m.value >= 80 ? '#10b981' : m.value >= 60 ? '#f59e0b' : '#ef4444' }}>{m.value}%</span>
-                                        </div>
-                                        <div style={{ height: '6px', background: 'rgba(255,255,255,0.05)', borderRadius: '3px', overflow: 'hidden' }}>
-                                            <div style={{
-                                                width: `${m.value}%`, height: '100%',
-                                                background: m.color,
-                                                borderRadius: '3px', transition: 'width 1s ease-out'
-                                            }} />
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* AI Feedback */}
-                    <div style={{ marginBottom: '1.5rem' }}>
-                        <h4 style={{ margin: '0 0 0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <Sparkles size={18} color="#06b6d4" /> AI Feedback
-                        </h4>
-                        <div style={{
-                            background: 'var(--bg-dark)', padding: '1.25rem', borderRadius: '0.75rem',
-                            border: '1px solid var(--border-color)', whiteSpace: 'pre-wrap',
-                            color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: '1.7', maxHeight: '300px', overflowY: 'auto'
-                        }}>
-                            {submission.feedback || 'No feedback provided.'}
-                        </div>
-                    </div>
-
-                    {/* AI Summary */}
-                    {submission.aiExplanation && (
-                        <div style={{ marginBottom: '1.5rem' }}>
-                            <h4 style={{ margin: '0 0 0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <Eye size={18} color="#8b5cf6" /> Summary
-                            </h4>
-                            <div style={{
-                                background: 'rgba(139, 92, 246, 0.05)', padding: '1rem', borderRadius: '0.75rem',
-                                border: '1px solid rgba(139, 92, 246, 0.2)',
-                                color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: '1.6'
-                            }}>
-                                {submission.aiExplanation}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Submitted Content */}
-                    <div>
-                        <h4 style={{ margin: '0 0 0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            {isGithub ? <Github size={18} color="var(--text-main)" /> : <FileText size={18} color="var(--text-main)" />}
-                            {isGithub ? 'GitHub Repository' : 'Submitted Code'}
-                        </h4>
-                        {isGithub ? (
-                            <div style={{ background: 'var(--bg-dark)', padding: '1rem', borderRadius: '0.75rem', border: '1px solid var(--border-color)' }}>
-                                <a href={submission.code} target="_blank" rel="noopener noreferrer" style={{ color: '#3b82f6', display: 'flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none' }}>
-                                    <ExternalLink size={16} /> {submission.code}
-                                </a>
-                            </div>
-                        ) : (
-                            <pre style={{
-                                background: 'var(--bg-dark)', padding: '1.25rem', borderRadius: '0.75rem',
-                                overflow: 'auto', maxHeight: '300px', fontSize: '0.8rem',
-                                fontFamily: 'monospace', color: 'var(--text-main)',
-                                border: '1px solid var(--border-color)', lineHeight: '1.6'
-                            }}>{submission.code}</pre>
-                        )}
-                    </div>
-                </div>
-            </div>
-        </div>
-    )
-}
 
 // ==================== ADMIN SUBMISSION REPORT MODAL ====================
 function AdminSubmissionReportModal({ submission, onClose }) {
@@ -2176,402 +1952,7 @@ function AdminSubmissionReportModal({ submission, onClose }) {
     )
 }
 
-// ==================== GLOBAL TASKS COMPONENT ====================
-function GlobalTasks() {
-    const [tasks, setTasks] = useState([])
-    const [loading, setLoading] = useState(true)
-    const [showModal, setShowModal] = useState(false)
-    const [showAIChat, setShowAIChat] = useState(false)
-    const [uploading, setUploading] = useState(false)
-    const csvInputRef = useRef(null)
-    const [task, setTask] = useState({
-        title: '',
-        type: 'machine_learning',
-        difficulty: 'medium',
-        description: '',
-        requirements: '',
-        deadline: ''
-    })
 
-    // AI Chatbot handler - auto-fills the task form
-    const handleAIGenerate = (generated) => {
-        setTask({
-            title: generated.title || '',
-            type: generated.type || 'machine_learning',
-            difficulty: generated.difficulty || 'medium',
-            description: generated.description || '',
-            requirements: generated.requirements || '',
-            deadline: task.deadline
-        })
-        setShowAIChat(false)
-        setShowModal(true)
-    }
-
-    const fetchTasks = () => {
-        axios.get(`${API_BASE}/tasks?mentorId=${ADMIN_ID}`)
-            .then(res => {
-                setTasks(Array.isArray(res.data) ? res.data : (res.data?.data || []))
-                setLoading(false)
-            })
-            .catch(err => setLoading(false))
-    }
-
-    useEffect(() => {
-        fetchTasks()
-    }, [])
-
-    const handleSubmit = async (e) => {
-        e.preventDefault()
-        try {
-            await axios.post(`${API_BASE}/tasks`, { ...task, mentorId: ADMIN_ID })
-            setShowModal(false)
-            setTask({
-                title: '', type: 'machine_learning', difficulty: 'medium',
-                description: '', requirements: '', deadline: ''
-            })
-            fetchTasks()
-        } catch (error) {
-            alert('Error creating global task')
-        }
-    }
-
-    const handleDelete = async (id) => {
-        if (window.confirm('Are you sure you want to delete this task?')) {
-            try {
-                await axios.delete(`${API_BASE}/tasks/${id}`)
-                fetchTasks()
-            } catch (error) {
-                alert('Error deleting task')
-            }
-        }
-    }
-
-    const handleCSVUpload = async (e) => {
-        const file = e.target.files[0]
-        if (!file) return
-        e.target.value = ''
-        setUploading(true)
-        try {
-            const text = await file.text()
-            const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-            if (lines.length < 2) { alert('CSV must have a header row and at least one data row'); setUploading(false); return }
-            const headers = lines[0].split(',').map(h => h.trim().toLowerCase())
-            const rows = lines.slice(1)
-            let created = 0
-            for (const row of rows) {
-                const vals = row.match(/(".*?"|[^,]*)/g)?.map(v => v.replace(/^"|"$/g, '').trim()) || []
-                const obj = {}
-                headers.forEach((h, i) => { obj[h] = vals[i] || '' })
-                const taskData = {
-                    title: obj.title || obj.name || '',
-                    type: obj.type || 'machine_learning',
-                    difficulty: obj.difficulty || 'medium',
-                    description: obj.description || '',
-                    requirements: obj.requirements || '',
-                    deadline: obj.deadline || '',
-                    mentorId: ADMIN_ID
-                }
-                if (!taskData.title) continue
-                await axios.post(`${API_BASE}/tasks`, taskData)
-                created++
-            }
-            alert(`Successfully created ${created} tasks from CSV!`)
-            fetchTasks()
-        } catch (err) { alert('Error parsing CSV: ' + err.message) }
-        setUploading(false)
-    }
-
-    if (loading) return <div className="loading-spinner"></div>
-
-    return (
-        <div className="animate-fadeIn">
-            {/* Hero Section */}
-            <div className="admin-hero-card glass" style={{
-                background: 'var(--bg-card)',
-                borderRadius: '1.5rem',
-                padding: '2rem',
-                marginBottom: '2rem',
-                border: '1px solid var(--border-color)',
-                position: 'relative',
-                overflow: 'hidden'
-            }}>
-                <div style={{ position: 'absolute', top: '-50px', right: '-50px', width: '200px', height: '200px', background: 'radial-gradient(circle, var(--primary-alpha) 0%, transparent 70%)', borderRadius: '50%' }}></div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'relative', zIndex: 1 }}>
-                    <div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.5rem' }}>
-                            <div style={{
-                                width: '50px', height: '50px', borderRadius: '1rem',
-                                background: 'var(--primary)',
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                boxShadow: '0 8px 32px var(--primary-alpha)'
-                            }}>
-                                <Globe size={24} color="white" />
-                            </div>
-                            <div>
-                                <h2 style={{ margin: 0, fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                                    Global Tasks Management
-                                </h2>
-                                <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.95rem' }}>
-                                    Create ML/AI tasks visible to all mentors and their students
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <input type="file" ref={csvInputRef} accept=".csv" style={{ display: 'none' }} onChange={handleCSVUpload} />
-                        <button
-                            onClick={() => csvInputRef.current?.click()}
-                            className="btn-create-new premium-btn"
-                            disabled={uploading}
-                            style={{
-                                padding: '0.85rem 1.25rem',
-                                background: 'linear-gradient(135deg, #10b981, #059669)',
-                                borderRadius: '0.75rem',
-                                fontSize: '0.9rem',
-                                fontWeight: 600,
-                                display: 'flex', alignItems: 'center', gap: '0.4rem',
-                                opacity: uploading ? 0.6 : 1
-                            }}
-                        >
-                            <Upload size={18} /> {uploading ? 'Uploading...' : 'CSV Upload'}
-                        </button>
-                        <button
-                            onClick={() => setShowAIChat(true)}
-                            className="btn-create-new premium-btn"
-                            style={{
-                                padding: '0.85rem 1.25rem',
-                                background: 'linear-gradient(135deg, #8b5cf6, #6366f1)',
-                                borderRadius: '0.75rem',
-                                fontSize: '0.9rem',
-                                fontWeight: 600,
-                                display: 'flex', alignItems: 'center', gap: '0.4rem'
-                            }}
-                        >
-                            <Sparkles size={18} /> AI Generate
-                        </button>
-                        <button
-                            onClick={() => setShowModal(true)}
-                            className="btn-create-new premium-btn"
-                            style={{
-                                padding: '0.85rem 1.5rem',
-                                background: 'var(--primary)',
-                                borderRadius: '0.75rem',
-                                fontSize: '0.9rem',
-                                fontWeight: 600
-                            }}
-                        >
-                            <Plus size={18} /> Create Manual
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            {/* Stats Grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.5rem', marginBottom: '2rem' }}>
-                <div className="stat-card glass">
-                    <div className="stat-icon" style={{ background: 'var(--primary-alpha)', color: 'var(--primary)' }}>
-                        <Target size={24} />
-                    </div>
-                    <div className="stat-info">
-                        <span className="stat-label">Total Tasks</span>
-                        <span className="stat-value">{tasks.length}</span>
-                    </div>
-                </div>
-                <div className="stat-card glass">
-                    <div className="stat-icon" style={{ background: 'var(--success-alpha)', color: 'var(--success)' }}>
-                        <Zap size={24} />
-                    </div>
-                    <div className="stat-info">
-                        <span className="stat-label">Live Tasks</span>
-                        <span className="stat-value">{tasks.filter(t => t.status === 'live').length}</span>
-                    </div>
-                </div>
-                <div className="stat-card glass">
-                    <div className="stat-icon" style={{ background: 'var(--secondary-alpha)', color: 'var(--secondary)' }}>
-                        <Users size={24} />
-                    </div>
-                    <div className="stat-info">
-                        <span className="stat-label">Total Completions</span>
-                        <span className="stat-value">{tasks.reduce((acc, t) => acc + (t.completedBy?.length || 0), 0)}</span>
-                    </div>
-                </div>
-            </div>
-
-            {/* Tasks Grid */}
-            <div className="cards-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))' }}>
-                {tasks.length === 0 ? (
-                    <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '4rem', opacity: 0.5 }}>
-                        <Globe size={64} style={{ marginBottom: '1rem', opacity: 0.3 }} />
-                        <h3>No Global Tasks Yet</h3>
-                        <p>Create your first global task to make it visible to all students!</p>
-                    </div>
-                ) : (
-                    tasks.map(t => (
-                        <div key={t.id} className="item-card glass" style={{
-                            minHeight: '280px',
-                            background: 'var(--bg-secondary)',
-                            border: '1px solid var(--border-color)'
-                        }}>
-                            <div className="item-card-header">
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                                    <div style={{
-                                        padding: '10px',
-                                        background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(139, 92, 246, 0.2))',
-                                        borderRadius: '10px'
-                                    }}>
-                                        <Globe size={20} color="#3b82f6" />
-                                    </div>
-                                    <div>
-                                        <span style={{ fontSize: '0.65rem', color: '#8b5cf6', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>GLOBAL TASK</span>
-                                        <h3 style={{ margin: 0, fontSize: '1.1rem' }}>{t.title}</h3>
-                                    </div>
-                                </div>
-                                <span className={`status-badge ${t.status}`}>{t.status}</span>
-                            </div>
-                            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: '1.6', marginBottom: '1rem' }}>{t.description}</p>
-
-                            {t.requirements && (
-                                <div style={{
-                                    background: 'rgba(59, 130, 246, 0.05)',
-                                    padding: '0.75rem',
-                                    borderRadius: '0.5rem',
-                                    marginBottom: '1rem',
-                                    fontSize: '0.8rem',
-                                    color: 'var(--text-muted)'
-                                }}>
-                                    <strong style={{ color: '#60a5fa' }}>Requirements:</strong><br />
-                                    {t.requirements.split('\n').slice(0, 2).join('\n')}...
-                                </div>
-                            )}
-
-                            <div className="item-card-footer" style={{ paddingTop: '1rem', marginTop: 'auto' }}>
-                                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                                    <span className={`difficulty-badge ${t.difficulty?.toLowerCase()}`}>{t.difficulty}</span>
-                                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                        {t.completedBy?.length || 0} completed
-                                    </span>
-                                </div>
-                                <button
-                                    onClick={() => handleDelete(t.id)}
-                                    style={{ background: 'rgba(239, 68, 68, 0.1)', border: 'none', color: '#ef4444', padding: '0.5rem 1rem', borderRadius: '0.5rem', cursor: 'pointer', fontSize: '0.8rem' }}
-                                >
-                                    Delete
-                                </button>
-                            </div>
-                        </div>
-                    ))
-                )}
-            </div>
-
-            {/* Create Modal */}
-            {showModal && (
-                <div className="modal-overlay" onClick={() => setShowModal(false)}>
-                    <div className="modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '700px' }}>
-                        <div className="modal-header">
-                            <div className="modal-title-with-icon">
-                                <div style={{
-                                    width: '40px', height: '40px', borderRadius: '10px',
-                                    background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center'
-                                }}>
-                                    <Globe size={20} color="white" />
-                                </div>
-                                <h2>Create Global Task</h2>
-                            </div>
-                            <button onClick={() => setShowModal(false)} className="modal-close"><X size={20} /></button>
-                        </div>
-                        <div className="modal-body premium-form">
-                            <form onSubmit={handleSubmit}>
-                                <div className="form-group">
-                                    <label className="form-label">Task Title</label>
-                                    <input
-                                        type="text"
-                                        placeholder="e.g., Sentiment Analysis Challenge"
-                                        value={task.title}
-                                        onChange={(e) => setTask({ ...task, title: e.target.value })}
-                                        required
-                                    />
-                                </div>
-
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-                                    <div className="form-group">
-                                        <label className="form-label">Task Type</label>
-                                        <select
-                                            value={task.type}
-                                            onChange={(e) => setTask({ ...task, type: e.target.value })}
-                                        >
-                                            <option value="machine_learning">Machine Learning</option>
-                                            <option value="deep_learning">Deep Learning</option>
-                                            <option value="data_science">Data Science</option>
-                                            <option value="nlp">NLP</option>
-                                            <option value="computer_vision">Computer Vision</option>
-                                        </select>
-                                    </div>
-                                    <div className="form-group">
-                                        <label className="form-label">Difficulty</label>
-                                        <select
-                                            value={task.difficulty}
-                                            onChange={(e) => setTask({ ...task, difficulty: e.target.value })}
-                                        >
-                                            <option value="easy">Easy</option>
-                                            <option value="medium">Medium</option>
-                                            <option value="hard">Hard</option>
-                                        </select>
-                                    </div>
-                                </div>
-
-                                <div className="form-group">
-                                    <label className="form-label">Description</label>
-                                    <textarea
-                                        rows="4"
-                                        placeholder="Describe the task in detail..."
-                                        value={task.description}
-                                        onChange={(e) => setTask({ ...task, description: e.target.value })}
-                                        required
-                                    ></textarea>
-                                </div>
-
-                                <div className="form-group">
-                                    <label className="form-label">Requirements (one per line)</label>
-                                    <textarea
-                                        rows="4"
-                                        placeholder="1. Data Preprocessing&#10;2. Model Training&#10;3. Evaluation Metrics"
-                                        value={task.requirements}
-                                        onChange={(e) => setTask({ ...task, requirements: e.target.value })}
-                                    ></textarea>
-                                </div>
-
-                                <div className="form-group">
-                                    <label className="form-label">Deadline (Optional)</label>
-                                    <input
-                                        type="date"
-                                        value={task.deadline}
-                                        onChange={(e) => setTask({ ...task, deadline: e.target.value })}
-                                    />
-                                </div>
-
-                                <div className="form-actions">
-                                    <button type="button" className="btn-reset" onClick={() => setShowModal(false)}>Cancel</button>
-                                    <button type="submit" className="btn-create-new" style={{ background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)' }}>
-                                        <Globe size={18} /> Create Global Task
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* AI Chatbot for Task Generation */}
-            <AIChatbot
-                context="task"
-                isOpen={showAIChat}
-                onClose={() => setShowAIChat(false)}
-                onGenerate={handleAIGenerate}
-            />
-        </div>
-    )
-}
 
 // ==================== GLOBAL PROBLEMS COMPONENT ====================
 function GlobalProblems() {
