@@ -97,7 +97,7 @@ async def lifespan(app: FastAPI):
 
 # ─── Create App ─────────────────────────────────────────────────
 
-app = FastAPI(title="MentorHub API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="AI Assessment Hub API", version="1.0.0", lifespan=lifespan)
 
 # CORS
 app.add_middleware(
@@ -150,7 +150,7 @@ app.include_router(admin_router)
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "message": "MentorHub FastAPI is running"}
+    return {"status": "ok", "message": "AI Assessment Hub FastAPI is running"}
 
 
 # ─── Uploads static files ───────────────────────────────────────
