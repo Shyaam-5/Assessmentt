@@ -23,7 +23,7 @@ async def run_in_subprocess(cmd: list[str], stdin_data: str | None = None, timeo
         def execute():
             return subprocess.run(
                 cmd,
-                input=stdin_data.encode() if stdin_data else None,
+                input=(stdin_data or "").encode(),
                 capture_output=True,
                 timeout=timeout
             )

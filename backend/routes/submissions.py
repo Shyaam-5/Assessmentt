@@ -59,6 +59,7 @@ class ProctoredSubmission(BaseModel):
     faceNotDetectedCount: int | None = 0
     multipleFacesDetectionCount: int | None = 0
     faceLookawayCount: int | None = 0
+    proctored: bool | None = False
 
 
 # ─── SQL helpers ───────────────────────────────────────────────
@@ -563,44 +564,24 @@ Return strict JSON:
 
 
 @router.post("/submissions/proctored")
-async def proctored_submission(
-    studentId: str = Form(...),
-    problemId: str = Form(...),
-    language: str = Form(...),
-    code: str = Form(...),
-    submissionType: str | None = Form("editor"),
-    tabSwitches: int = Form(0),
-    copyPasteAttempts: int = Form(0),
-    cameraBlockedCount: int = Form(0),
-    phoneDetectionCount: int = Form(0),
-    timeSpent: int = Form(0),
-    faceNotDetectedCount: int = Form(0),
-    multipleFacesDetectionCount: int = Form(0),
-    faceLookawayCount: int = Form(0),
-    proctoringVideo: UploadFile | None = File(None),
-):
-    import os
-    import shutil
-
+async def proctored_submission(body: ProctoredSubmission):
     pool = await get_pool()
     submission_id = str(uuid.uuid4())
     submitted_at = datetime.utcnow()
 
-    # Save video file if present
-    video_filename = None
-    if proctoringVideo:
-        upload_dir = "uploads/proctoring"
-        os.makedirs(upload_dir, exist_ok=True)
-        file_ext = os.path.splitext(proctoringVideo.filename)[1] or ".webm"
-        video_filename = f"{submission_id}{file_ext}"
-        file_path = os.path.join(upload_dir, video_filename)
-        
-        try:
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(proctoringVideo.file, buffer)
-            print(f"[{datetime.now()}] Saved proctoring video: {file_path}")
-        except Exception as e:
-            print(f"Error saving video file: {e}")
+    # Extract fields from body
+    studentId = body.studentId
+    problemId = body.problemId
+    language = body.language
+    code = body.code
+    submissionType = body.submissionType or "editor"
+    tabSwitches = body.tabSwitches or 0
+    copyPasteAttempts = body.copyPasteAttempts or 0
+    cameraBlockedCount = body.cameraBlockedCount or 0
+    phoneDetectionCount = body.phoneDetectionCount or 0
+    faceNotDetectedCount = body.faceNotDetectedCount or 0
+    multipleFacesDetectionCount = body.multipleFacesDetectionCount or 0
+    faceLookawayCount = body.faceLookawayCount or 0
 
     # Get problem details
     problem = None
@@ -672,8 +653,8 @@ Respond JSON: {{"score":0-100,"status":"accepted|partial|rejected","feedback":".
                     analysis_correctness, analysis_efficiency, analysis_code_style, analysis_best_practices,
                     tab_switches, copy_paste_attempts, camera_blocked_count, phone_detection_count,
                     face_not_detected_count, multiple_faces_count, face_lookaway_count,
-                    integrity_violation, submitted_at, proctoring_video
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    integrity_violation, submitted_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (
                     submission_id, studentId, problemId, code,
                     submissionType or "editor", language,
@@ -687,7 +668,6 @@ Respond JSON: {{"score":0-100,"status":"accepted|partial|rejected","feedback":".
                     faceLookawayCount,
                     "true" if integrity_violation else "false",
                     submitted_at,
-                    video_filename,
                 ),
             )
 
