@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from database import get_pool
 import pymysql.cursors
+import bcrypt
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
@@ -13,6 +14,9 @@ router = APIRouter(prefix="/api", tags=["auth"])
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+class VerifyRequest(BaseModel):
+    userId: str
 
 
 # ---------- Helpers ----------
@@ -34,13 +38,37 @@ async def login(body: LoginRequest):
     async with pool.acquire() as conn:
         async with conn.cursor(pymysql.cursors.DictCursor) as cur:
             await cur.execute(
-                "SELECT * FROM users WHERE email = %s AND password = %s",
-                (body.email, body.password),
+                "SELECT * FROM users WHERE email = %s",
+                (body.email,),
             )
             row = await cur.fetchone()
 
     if not row:
         raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+    hashed_password = row.get("password", "")
+    try:
+        if not bcrypt.checkpw(body.password.encode("utf-8"), hashed_password.encode("utf-8")):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+    except ValueError:
+        # In case the password in DB is not a valid bcrypt hash
+        if body.password != hashed_password:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    user = _clean_user(row)
+    return {"success": True, "user": user}
+
+
+@router.post("/auth/verify")
+async def verify_login(body: VerifyRequest):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            await cur.execute("SELECT * FROM users WHERE id = %s", (body.userId,))
+            row = await cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=401, detail="User not found or invalid session")
 
     user = _clean_user(row)
     return {"success": True, "user": user}
