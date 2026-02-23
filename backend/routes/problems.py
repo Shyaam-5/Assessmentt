@@ -45,16 +45,18 @@ def _enrich_problem(p: dict) -> dict:
     p["expectedQueryResult"] = p.pop("expected_query_result", None)
     p["createdAt"] = str(p.pop("created_at", ""))
 
-    # Proctoring settings
-    p["proctoringSettings"] = {
-        "enableCamera": p.pop("enable_camera", None) == "true",
-        "enableProctoring": p.pop("enable_proctoring", None) == "true",
+    # Proctoring settings mapped to what frontend expects for code editor
+    enable_proc = p.pop("enable_proctoring", None) == "true"
+    p["proctoring"] = {
+        "enabled": enable_proc,
+        "videoAudio": p.pop("enable_video_audio", None) == "true",
         "enableAIProctoring": p.pop("enable_ai_proctoring", None) == "true",
         "trackTabSwitches": p.pop("track_tab_switches", None) == "true",
         "maxTabSwitches": int(p.pop("max_tab_switches", 3) or 3),
         "enableFaceDetection": p.pop("enable_face_detection", None) == "true",
         "detectMultipleFaces": p.pop("detect_multiple_faces", None) == "true",
         "trackFaceLookaway": p.pop("track_face_lookaway", None) == "true",
+        "disableCopyPaste": enable_proc,  # Default to true if proctoring is enabled
     }
     return p
 
