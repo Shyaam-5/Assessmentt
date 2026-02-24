@@ -1,7 +1,7 @@
 {
-    "name": "AI Mentor Hub",
-    "short_name": "MentorHub",
-    "description": "AI-powered mentoring platform for students - coding, aptitude tests, and real-time monitoring",
+    "name": "AI Assessment Hub",
+    "short_name": "AssessmentHub",
+    "description": "AI-powered assessment platform for students - coding, aptitude tests, and real-time monitoring",
     "start_url": "/",
     "display": "standalone",
     "background_color": "#0f172a",
@@ -9,7 +9,10 @@
     "orientation": "any",
     "scope": "/",
     "lang": "en",
-    "categories": ["education", "productivity"],
+    "categories": [
+        "education",
+        "productivity"
+    ],
     "icons": [
         {
             "src": "/icons/icon-72.png",

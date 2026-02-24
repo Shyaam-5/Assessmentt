@@ -41,17 +41,40 @@ function App() {
     const navigate = useNavigate()
 
     useEffect(() => {
-        // Check for saved user session
-        try {
-            const savedUser = localStorage.getItem('currentUser')
-            if (savedUser && savedUser !== 'undefined') {
-                setUser(JSON.parse(savedUser))
+        // Check for saved user session and verify with backend
+        const verifySession = async () => {
+            try {
+                const savedUser = localStorage.getItem('currentUser')
+                if (savedUser && savedUser !== 'undefined') {
+                    const parsedUser = JSON.parse(savedUser)
+
+                    // Verify with backend
+                    const response = await fetch(`${API_BASE}/auth/verify`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId: parsedUser.id })
+                    })
+
+                    if (response.ok) {
+                        const data = await response.json()
+                        setUser(data.user)
+                        localStorage.setItem('currentUser', JSON.stringify(data.user))
+                    } else {
+                        console.warn('Session invalid or expired')
+                        localStorage.removeItem('currentUser')
+                        setUser(null)
+                    }
+                }
+            } catch (error) {
+                console.error('Session verification failed:', error)
+                localStorage.removeItem('currentUser')
+                setUser(null)
+            } finally {
+                setLoading(false)
             }
-        } catch (error) {
-            console.error('Failed to parse saved user:', error)
-            localStorage.removeItem('currentUser')
         }
-        setLoading(false)
+
+        verifySession()
     }, [])
 
     useEffect(() => {

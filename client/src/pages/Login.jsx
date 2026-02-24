@@ -196,7 +196,7 @@ function Login() {
             <nav className="login-nav">
                 <div className="nav-logo">
                     <Brain className="logo-icon-svg" size={28} />
-                    <span className="logo-text">Mentor Hub</span>
+                    <span className="logo-text">Assessment Hub</span>
                 </div>
                 <button className="nav-login-btn" onClick={() => setShowLoginPanel(true)}>
                     Login <ArrowRight size={16} />

@@ -606,39 +606,56 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
 
     // ============ MULTIPLE MONITOR DETECTION ============
 
+    // Helper to trigger multi-monitor violation
+    const triggerMonitorViolation = useCallback((reason) => {
+        setMultipleMonitors(true)
+        setMultipleMonitorCount(prev => {
+            const newCount = prev + 1
+            console.log(`🖥️ Multiple monitors detected! Reason: ${reason}`)
+
+            socketService.emitProctoringViolation(
+                user.id,
+                user.name || user.email,
+                'multiple_monitors',
+                newCount >= 2 ? 'critical' : 'warning',
+                problem.mentorId
+            )
+
+            setWarningMessage(`🖥️ Multiple monitors detected! (${newCount} times) Please disconnect external displays.`)
+            setShowWarning(true)
+            setTimeout(() => setShowWarning(false), 6000)
+            return newCount
+        })
+    }, [user, problem])
+
     const detectMultipleMonitors = useCallback(() => {
         let detected = false
         let reason = ''
 
-        // Method 1: Screen Details API (modern browsers - most accurate)
-        if ('getScreenDetails' in window) {
-            window.getScreenDetails().then(screenDetails => {
-                if (screenDetails.screens.length > 1) {
-                    detected = true
-                    reason = `${screenDetails.screens.length} screens detected via Screen API`
-                }
-            }).catch(() => {
-                // Permission denied or not supported - fall through to heuristics
-            })
+        // ===== Method 1: screen.isExtended (BEST — works for pre-connected monitors) =====
+        // This is a synchronous property that returns true if the device has multiple screens
+        // Supported in Chrome 100+, Edge 100+
+        if ('isExtended' in window.screen) {
+            if (window.screen.isExtended) {
+                detected = true
+                reason = `screen.isExtended is true — multi-screen environment detected`
+            }
         }
 
-        // Method 2: Screen dimension heuristics
-        // If screen.width is much larger than screen.availWidth, or if the window
-        // can be positioned beyond the primary screen boundaries
+        // ===== Method 2: Screen dimension heuristics =====
         const screenW = window.screen.width
         const screenH = window.screen.height
         const availW = window.screen.availWidth
         const availH = window.screen.availHeight
 
-        // Ultra-wide detection: if the screen reports a very wide aspect ratio,
-        // it could be an extended desktop spanning multiple monitors
+        // Ultra-wide detection: extended desktop often reports very wide aspect ratios
         if (screenW > screenH * 2.5) {
             detected = true
             reason = `Ultra-wide/extended desktop detected (${screenW}x${screenH})`
         }
 
-        // Method 3: Window position check — if the window is positioned
-        // outside the primary screen bounds, it's on a secondary monitor
+        // ===== Method 3: Window position check =====
+        // If the window is positioned outside the primary screen bounds
         const winLeft = window.screenX || window.screenLeft || 0
         const winTop = window.screenY || window.screenTop || 0
         if (winLeft < 0 || winLeft >= screenW || winTop < 0 || winTop >= screenH) {
@@ -646,64 +663,67 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
             reason = `Window on secondary monitor (pos: ${winLeft}, ${winTop})`
         }
 
-        // Method 4: devicePixelRatio mismatch combined with large available area
-        // Some multi-monitor setups report different devicePixelRatios
+        // ===== Method 4: Available area exceeds screen =====
         if (availW > screenW || availH > screenH) {
             detected = true
             reason = `Available area (${availW}x${availH}) exceeds screen (${screenW}x${screenH})`
         }
 
+        // Handle synchronous detection results
         if (detected && !multipleMonitors) {
-            setMultipleMonitors(true)
-            setMultipleMonitorCount(prev => {
-                const newCount = prev + 1
-                console.log(`🖥️ Multiple monitors detected! Reason: ${reason}`)
-
-                socketService.emitProctoringViolation(
-                    user.id,
-                    user.name || user.email,
-                    'multiple_monitors',
-                    newCount >= 2 ? 'critical' : 'warning',
-                    problem.mentorId
-                )
-
-                setWarningMessage(`🖥️ Multiple monitors detected! (${newCount} times) Please disconnect external displays.`)
-                setShowWarning(true)
-                setTimeout(() => setShowWarning(false), 6000)
-                return newCount
-            })
+            triggerMonitorViolation(reason)
         } else if (!detected && multipleMonitors) {
             setMultipleMonitors(false)
         }
 
+        // ===== Method 5: Screen Details API (async — most accurate but needs permission) =====
+        // This runs async as a secondary check; handles the case where sync methods miss it
+        if ('getScreenDetails' in window) {
+            window.getScreenDetails().then(screenDetails => {
+                if (screenDetails.screens.length > 1 && !multipleMonitors) {
+                    triggerMonitorViolation(
+                        `${screenDetails.screens.length} screens detected via Screen Details API`
+                    )
+                }
+            }).catch(() => {
+                // Permission denied or not supported — sync methods above already ran
+            })
+        }
+
         return detected
-    }, [multipleMonitors, user, problem])
+    }, [multipleMonitors, triggerMonitorViolation])
 
     // Run monitor detection on mount and periodically
     useEffect(() => {
         if (!proctoring.enabled) return
 
-        // Initial check after a short delay
-        const initialTimeout = setTimeout(() => {
-            detectMultipleMonitors()
-        }, 1000)
+        // Immediate check on mount — catches pre-connected monitors
+        detectMultipleMonitors()
 
         // Periodic check every 5 seconds (monitors can be plugged in during exam)
         monitorCheckIntervalRef.current = setInterval(() => {
             detectMultipleMonitors()
         }, 5000)
 
-        // Also check when window is moved (could be dragged to second monitor)
+        // Check when window is moved (could be dragged to second monitor)
         const handleWindowMove = () => detectMultipleMonitors()
         window.addEventListener('resize', handleWindowMove)
 
+        // Listen for screen.isExtended changes (Chrome fires 'change' event on screen)
+        const handleScreenChange = () => detectMultipleMonitors()
+        if (window.screen && 'addEventListener' in window.screen) {
+            window.screen.addEventListener('change', handleScreenChange)
+        }
+
         return () => {
-            clearTimeout(initialTimeout)
             if (monitorCheckIntervalRef.current) {
                 clearInterval(monitorCheckIntervalRef.current)
                 monitorCheckIntervalRef.current = null
             }
             window.removeEventListener('resize', handleWindowMove)
+            if (window.screen && 'removeEventListener' in window.screen) {
+                window.screen.removeEventListener('change', handleScreenChange)
+            }
         }
     }, [proctoring, detectMultipleMonitors])
 
