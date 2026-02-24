@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { AlertTriangle, Video, VideoOff, Mic, MicOff, Eye, Clock, X, CheckCircle, XCircle, Play, Send, Lightbulb, Code, Smartphone, Database, Layers, Shield, Users } from 'lucide-react'
+import { AlertTriangle, Video, VideoOff, Mic, MicOff, Eye, Clock, X, CheckCircle, XCircle, Play, Send, Lightbulb, Code, Smartphone, Database, Layers, Shield, Users, Monitor } from 'lucide-react'
 import Editor from '@monaco-editor/react'
 import axios from 'axios'
 import * as tf from '@tensorflow/tfjs'
@@ -34,6 +34,11 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
     const [testResults, setTestResults] = useState([])
     const [runningTests, setRunningTests] = useState(false)
     const containerRef = useRef(null)
+    const [fullscreenExitCount, setFullscreenExitCount] = useState(0)
+
+    // Media recording state
+    const mediaRecorderRef = useRef(null)
+    const recordedChunksRef = useRef([])
 
     // Proctoring state
     const [tabSwitches, setTabSwitches] = useState(0)
@@ -60,6 +65,11 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
     const [faceNotDetectedCount, setFaceNotDetectedCount] = useState(0)
     const [multipleFacesDetectionCount, setMultipleFacesDetectionCount] = useState(0)
 
+    // Multiple Monitor Detection state
+    const [multipleMonitors, setMultipleMonitors] = useState(false)
+    const [multipleMonitorCount, setMultipleMonitorCount] = useState(0)
+    const monitorCheckIntervalRef = useRef(null)
+
     const videoRef = useRef(null)
     const canvasRef = useRef(null)
     const cameraCheckIntervalRef = useRef(null)
@@ -70,6 +80,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
 
     // Face Detection refs (NEW - BlazeFace)
     const faceDetectorRef = useRef(null)
+    const faceMissCountRef = useRef(0)  // Grace period counter for face-not-detected
     const faceCheckIntervalRef = useRef(null)
     const faceDetectedRef = useRef(true)
 
@@ -91,13 +102,6 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         // Request fullscreen after a short delay to ensure DOM is ready
         setTimeout(requestFullscreen, 100)
 
-        // Handle fullscreen changes
-        const handleFullscreenChange = () => {
-            setIsFullscreen(!!document.fullscreenElement)
-        }
-
-        document.addEventListener('fullscreenchange', handleFullscreenChange)
-
         // Load test cases
         if (problem.testCases) {
             const cases = typeof problem.testCases === 'string' ? JSON.parse(problem.testCases) : problem.testCases
@@ -105,13 +109,42 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         }
 
         return () => {
-            document.removeEventListener('fullscreenchange', handleFullscreenChange)
             // Exit fullscreen when closing
             if (document.fullscreenElement) {
                 document.exitFullscreen().catch(() => { })
             }
         }
     }, [])
+
+    // Fullscreen exit detection — warn, record violation, BLOCK the editor
+    useEffect(() => {
+        const handleFullscreenChange = () => {
+            const isNowFullscreen = !!document.fullscreenElement
+            setIsFullscreen(isNowFullscreen)
+
+            if (!isNowFullscreen && !isDisqualified) {
+                // User exited fullscreen — record violation
+                setFullscreenExitCount(prev => {
+                    const newCount = prev + 1
+
+                    // Emit socket proctoring violation
+                    socketService.emitProctoringViolation(
+                        user.id,
+                        user.name || user.email,
+                        'fullscreen_exit',
+                        newCount >= 3 ? 'critical' : 'warning',
+                        problem.mentorId
+                    )
+
+                    return newCount
+                })
+                // NOTE: No auto-re-request — the blocking overlay forces the user to click "Re-enter Fullscreen"
+            }
+        }
+
+        document.addEventListener('fullscreenchange', handleFullscreenChange)
+        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+    }, [isDisqualified, user, problem])
 
     // Initialize video/audio if enabled
     useEffect(() => {
@@ -146,6 +179,9 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
             if (proctoring.enableFaceDetection || proctoring.detectMultipleFaces || proctoring.trackFaceLookaway) {
                 loadFaceDetectionModel()
             }
+
+            // 🎥 Start recording the camera stream
+            startRecording(stream)
         } catch (err) {
             console.error('Failed to access camera/microphone:', err)
             setWarningMessage('⚠️ Camera/Microphone access required for proctoring')
@@ -153,7 +189,61 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         }
     }
 
+    const startRecording = (stream) => {
+        try {
+            recordedChunksRef.current = []
+            const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+                ? 'video/webm;codecs=vp9,opus'
+                : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+                    ? 'video/webm;codecs=vp8,opus'
+                    : 'video/webm'
+
+            const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 500000 })
+            recorder.ondataavailable = (event) => {
+                if (event.data && event.data.size > 0) {
+                    recordedChunksRef.current.push(event.data)
+                }
+            }
+            recorder.onstop = () => {
+                console.log('🎥 Recording stopped, chunks:', recordedChunksRef.current.length)
+            }
+            recorder.start(5000) // Collect data every 5 seconds
+            mediaRecorderRef.current = recorder
+            console.log('🎥 Camera recording started')
+        } catch (err) {
+            console.error('Failed to start recording:', err)
+        }
+    }
+
+    const stopRecording = () => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            mediaRecorderRef.current.stop()
+            mediaRecorderRef.current = null
+            console.log('🎥 Camera recording stopped')
+        }
+    }
+
+    const downloadRecording = () => {
+        if (recordedChunksRef.current.length === 0) {
+            console.log('No recording data to download')
+            return null
+        }
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `proctoring_${user.id}_${problem.id}_${Date.now()}.webm`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+        console.log('🎥 Recording downloaded')
+        return blob
+    }
+
     const stopAllMedia = () => {
+        // Stop camera recording first (before stopping tracks!)
+        stopRecording()
         // Stop camera obstruction detection
         stopCameraCheck()
         // Stop phone detection
@@ -189,10 +279,10 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         canvas.height = 48
         canvasRef.current = canvas
 
-        // Check every 3 seconds
+        // Check every 1.5 seconds for real-time detection
         cameraCheckIntervalRef.current = setInterval(() => {
             checkCameraObstruction()
-        }, 3000)
+        }, 1500)
     }
 
     const stopCameraCheck = () => {
@@ -262,7 +352,10 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         // 3. Very low variance (< 8) means uniform color = shutter/cover/tape
         const isBlocked = darkRatio > 0.90 || avgBrightness < 15 || variance < 8
 
-        console.log(`Camera check - Brightness: ${avgBrightness.toFixed(1)}, Variance: ${variance.toFixed(1)}, Dark%: ${(darkRatio * 100).toFixed(1)}%, Blocked: ${isBlocked}`)
+        // Only log when state changes to reduce console spam
+        if (isBlocked !== cameraBlockedRef.current) {
+            console.log(`📹 Camera state changed - Blocked: ${isBlocked}, Brightness: ${avgBrightness.toFixed(1)}, Variance: ${variance.toFixed(1)}`)
+        }
 
         if (isBlocked && !cameraBlockedRef.current) {
             cameraBlockedRef.current = true
@@ -307,10 +400,10 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
     }
 
     const startPhoneDetection = () => {
-        // Check every 2 seconds for phones
+        // Check every 1.5 seconds for phones (real-time detection)
         phoneCheckIntervalRef.current = setInterval(() => {
             detectPhone()
-        }, 2000)
+        }, 1500)
     }
 
     const stopPhoneDetection = () => {
@@ -321,21 +414,11 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
     }
 
     const detectPhone = async () => {
-        if (!videoRef.current || !objectDetectorRef.current) {
-            console.log('⏳ Phone detection skipped - video or model not ready')
-            return
-        }
-
-        // Check if video is actually playing
-        if (videoRef.current.readyState < 2) {
-            console.log('⏳ Video not ready yet, readyState:', videoRef.current.readyState)
-            return
-        }
+        if (!videoRef.current || !objectDetectorRef.current) return
+        if (videoRef.current.readyState < 2) return
 
         try {
             const predictions = await objectDetectorRef.current.detect(videoRef.current)
-
-            console.log('🔍 Detection ran, found:', predictions.length, 'objects:', predictions.map(p => `${p.class}(${(p.score * 100).toFixed(0)}%)`).join(', '))
 
             // Check for cell phone, laptop, book, or remote (potential cheating devices)
             const suspiciousObjects = predictions.filter(p =>
@@ -345,9 +428,6 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
 
             const phoneFound = suspiciousObjects.some(p => p.class === 'cell phone' && p.score > 0.4)
 
-            if (suspiciousObjects.length > 0) {
-                console.log('🚨 Suspicious objects detected:', suspiciousObjects.map(p => `${p.class} (${(p.score * 100).toFixed(0)}%)`))
-            }
 
             if (phoneFound && !phoneDetectedRef.current) {
                 phoneDetectedRef.current = true
@@ -426,6 +506,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
     // Detect face in video stream
     const detectFace = async () => {
         if (!videoRef.current || !faceDetectorRef.current) return
+        if (videoRef.current.readyState < 2) return
 
         try {
             const predictions = await faceDetectorRef.current.estimateFaces(
@@ -433,15 +514,13 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                 false  // returnTensors = false
             )
 
-            console.log(`👁️ Face detection result: ${predictions.length} face(s)`)
-
             // Check face detection status
             if (predictions.length === 0) {
-                // Face not detected
-                if (proctoring.enableFaceDetection) {
+                // Use grace period: only trigger after 3 consecutive misses
+                faceMissCountRef.current += 1
+                if (faceMissCountRef.current >= 3 && proctoring.enableFaceDetection) {
                     setFaceDetected(false)
                     setFaceNotDetectedCount(prev => {
-                        // 📊 EMIT: Face not detected violation
                         socketService.emitProctoringViolation(
                             user.id,
                             user.name || user.email,
@@ -451,18 +530,20 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                         )
                         return prev + 1
                     })
-                    console.log('⚠️ Face not detected')
+                    setWarningMessage('👤 Face not detected! Please ensure your face is visible.')
+                    setShowWarning(true)
+                    setTimeout(() => setShowWarning(false), 4000)
+                    faceMissCountRef.current = 0  // Reset after counting violation
                 }
             } else if (predictions.length === 1) {
-                // Single face detected - GOOD
+                // Single face detected - GOOD, reset grace counter
+                faceMissCountRef.current = 0
                 setFaceDetected(true)
                 setMultipleFaces(false)
-                console.log('✅ Single face detected')
 
-                // Check if student is looking away (only if trackFaceLookaway is enabled)
+                // Check if student is looking away
                 if (proctoring.trackFaceLookaway && isLookingAway(predictions[0])) {
                     setFaceLookawayCount(prev => {
-                        // 📊 EMIT: Face lookaway violation
                         socketService.emitProctoringViolation(
                             user.id,
                             user.name || user.email,
@@ -472,15 +553,14 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                         )
                         return prev + 1
                     })
-                    console.log('⚠️ Face is off-center (looking away)')
                 }
             } else if (predictions.length >= 2) {
-                // Multiple faces detected - CHEATING (only if detectMultipleFaces is enabled)
+                // Multiple faces detected
+                faceMissCountRef.current = 0
                 if (proctoring.detectMultipleFaces) {
                     setFaceDetected(true)
                     setMultipleFaces(true)
                     setMultipleFacesDetectionCount(prev => {
-                        // 📊 EMIT: Multiple faces detected (critical violation)
                         socketService.emitProctoringViolation(
                             user.id,
                             user.name || user.email,
@@ -492,28 +572,27 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                     })
                     setWarningMessage(`👥 Multiple people detected! (${predictions.length} faces) - Automatic violation!`)
                     setShowWarning(true)
-                    console.log('🚨 Multiple faces detected - CHEATING')
+                    setTimeout(() => setShowWarning(false), 5000)
                 }
             }
         } catch (error) {
-            console.error('❌ Face detection inference failed:', error)
-            setFaceDetected(false)
+            console.error('Face detection inference failed:', error)
         }
     }
 
     // Start periodic face detection
     const startFaceDetection = () => {
         if (!faceDetectorRef.current) {
-            console.error('❌ Face detector not loaded yet')
+            console.error('Face detector not loaded yet')
             return
         }
 
-        // Run face detection every 1 second
+        // Run face detection every 1.5 seconds (real-time monitoring)
         faceCheckIntervalRef.current = setInterval(() => {
             detectFace()
-        }, 1000)
+        }, 1500)
 
-        console.log('👁️ Face detection started (1s intervals)')
+        console.log('👁️ Face detection started (1.5s intervals)')
     }
 
     // Stop face detection
@@ -524,6 +603,109 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
             console.log('👁️ Face detection stopped')
         }
     }
+
+    // ============ MULTIPLE MONITOR DETECTION ============
+
+    const detectMultipleMonitors = useCallback(() => {
+        let detected = false
+        let reason = ''
+
+        // Method 1: Screen Details API (modern browsers - most accurate)
+        if ('getScreenDetails' in window) {
+            window.getScreenDetails().then(screenDetails => {
+                if (screenDetails.screens.length > 1) {
+                    detected = true
+                    reason = `${screenDetails.screens.length} screens detected via Screen API`
+                }
+            }).catch(() => {
+                // Permission denied or not supported - fall through to heuristics
+            })
+        }
+
+        // Method 2: Screen dimension heuristics
+        // If screen.width is much larger than screen.availWidth, or if the window
+        // can be positioned beyond the primary screen boundaries
+        const screenW = window.screen.width
+        const screenH = window.screen.height
+        const availW = window.screen.availWidth
+        const availH = window.screen.availHeight
+
+        // Ultra-wide detection: if the screen reports a very wide aspect ratio,
+        // it could be an extended desktop spanning multiple monitors
+        if (screenW > screenH * 2.5) {
+            detected = true
+            reason = `Ultra-wide/extended desktop detected (${screenW}x${screenH})`
+        }
+
+        // Method 3: Window position check — if the window is positioned
+        // outside the primary screen bounds, it's on a secondary monitor
+        const winLeft = window.screenX || window.screenLeft || 0
+        const winTop = window.screenY || window.screenTop || 0
+        if (winLeft < 0 || winLeft >= screenW || winTop < 0 || winTop >= screenH) {
+            detected = true
+            reason = `Window on secondary monitor (pos: ${winLeft}, ${winTop})`
+        }
+
+        // Method 4: devicePixelRatio mismatch combined with large available area
+        // Some multi-monitor setups report different devicePixelRatios
+        if (availW > screenW || availH > screenH) {
+            detected = true
+            reason = `Available area (${availW}x${availH}) exceeds screen (${screenW}x${screenH})`
+        }
+
+        if (detected && !multipleMonitors) {
+            setMultipleMonitors(true)
+            setMultipleMonitorCount(prev => {
+                const newCount = prev + 1
+                console.log(`🖥️ Multiple monitors detected! Reason: ${reason}`)
+
+                socketService.emitProctoringViolation(
+                    user.id,
+                    user.name || user.email,
+                    'multiple_monitors',
+                    newCount >= 2 ? 'critical' : 'warning',
+                    problem.mentorId
+                )
+
+                setWarningMessage(`🖥️ Multiple monitors detected! (${newCount} times) Please disconnect external displays.`)
+                setShowWarning(true)
+                setTimeout(() => setShowWarning(false), 6000)
+                return newCount
+            })
+        } else if (!detected && multipleMonitors) {
+            setMultipleMonitors(false)
+        }
+
+        return detected
+    }, [multipleMonitors, user, problem])
+
+    // Run monitor detection on mount and periodically
+    useEffect(() => {
+        if (!proctoring.enabled) return
+
+        // Initial check after a short delay
+        const initialTimeout = setTimeout(() => {
+            detectMultipleMonitors()
+        }, 1000)
+
+        // Periodic check every 5 seconds (monitors can be plugged in during exam)
+        monitorCheckIntervalRef.current = setInterval(() => {
+            detectMultipleMonitors()
+        }, 5000)
+
+        // Also check when window is moved (could be dragged to second monitor)
+        const handleWindowMove = () => detectMultipleMonitors()
+        window.addEventListener('resize', handleWindowMove)
+
+        return () => {
+            clearTimeout(initialTimeout)
+            if (monitorCheckIntervalRef.current) {
+                clearInterval(monitorCheckIntervalRef.current)
+                monitorCheckIntervalRef.current = null
+            }
+            window.removeEventListener('resize', handleWindowMove)
+        }
+    }, [proctoring, detectMultipleMonitors])
 
     // Tab switch detection and fullscreen re-request
     useEffect(() => {
@@ -614,7 +796,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         try {
             const res = await axios.post(`${API_BASE}/run`, {
                 code,
-                language: problem.language,
+                language: selectedLanguage,
                 problemId: problem.id,
                 sqlSchema: problem.sqlSchema,  // Pass SQL schema for execution
                 stdin: customInput  // Pass custom input as stdin
@@ -684,7 +866,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                 try {
                     const res = await axios.post(`${API_BASE}/run`, {
                         code,
-                        language: problem.language,
+                        language: selectedLanguage,
                         problemId: problem.id,
                         sqlSchema: problem.sqlSchema,
                         stdin: testCase.input || testCase.stdin || ''
@@ -765,6 +947,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                 copyPasteAttempts,
                 cameraBlockedCount,
                 phoneDetectionCount,
+                fullscreenExitCount,
                 // Face Detection Metrics (NEW - BlazeFace)
                 faceNotDetectedCount,
                 multipleFacesDetectionCount,
@@ -786,6 +969,9 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
 
             // Stop all media (camera, microphone, recording)
             stopAllMedia()
+
+            // Download the camera recording
+            downloadRecording()
 
             if (onSubmitSuccess) {
                 onSubmitSuccess(response.data)
@@ -821,9 +1007,92 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         <div ref={containerRef} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: '#0f172a', zIndex: 10000, display: 'flex', flexDirection: 'column' }}>
             {/* Warning Toast */}
             {showWarning && (
-                <div style={{ position: 'fixed', top: '1rem', left: '50%', transform: 'translateX(-50%)', background: isDisqualified ? 'linear-gradient(135deg, #ef4444, #dc2626)' : 'linear-gradient(135deg, #f59e0b, #d97706)', color: 'white', padding: '1rem 2rem', borderRadius: '0.75rem', zIndex: 10001, boxShadow: '0 10px 40px rgba(239, 68, 68, 0.5)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <div style={{ position: 'fixed', top: '1rem', left: '50%', transform: 'translateX(-50%)', background: isDisqualified ? 'linear-gradient(135deg, #ef4444, #dc2626)' : 'linear-gradient(135deg, #f59e0b, #d97706)', color: 'white', padding: '1rem 2rem', borderRadius: '0.75rem', zIndex: 10002, boxShadow: '0 10px 40px rgba(239, 68, 68, 0.5)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                     <AlertTriangle size={24} />
                     <span style={{ fontWeight: 600 }}>{warningMessage}</span>
+                </div>
+            )}
+
+            {/* BLOCKING OVERLAY — Prevents all interaction when fullscreen is exited or multiple monitors detected */}
+            {(!isFullscreen || multipleMonitors) && !isDisqualified && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0, 0, 0, 0.92)',
+                    zIndex: 10003,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '2rem',
+                    backdropFilter: 'blur(10px)'
+                }}>
+                    <div style={{
+                        background: 'linear-gradient(135deg, #1e293b, #0f172a)',
+                        border: '2px solid #ef4444',
+                        borderRadius: '1.5rem',
+                        padding: '3rem',
+                        maxWidth: '500px',
+                        textAlign: 'center',
+                        boxShadow: '0 25px 60px rgba(239, 68, 68, 0.3)'
+                    }}>
+                        <div style={{ fontSize: '4rem', marginBottom: '1rem' }}>
+                            {multipleMonitors ? '🖥️' : '⛶'}
+                        </div>
+                        <h2 style={{ color: '#ef4444', margin: '0 0 1rem', fontSize: '1.5rem' }}>
+                            {multipleMonitors ? 'Multiple Monitors Detected!' : 'Fullscreen Required!'}
+                        </h2>
+                        <p style={{ color: '#94a3b8', margin: '0 0 0.5rem', fontSize: '0.95rem', lineHeight: 1.6 }}>
+                            {multipleMonitors
+                                ? 'You cannot continue the assessment while using multiple monitors. Please disconnect all external displays to continue.'
+                                : 'You must be in fullscreen mode to continue the assessment. This violation has been recorded.'
+                            }
+                        </p>
+                        <p style={{ color: '#ef4444', margin: '0 0 2rem', fontSize: '0.85rem', fontWeight: 600 }}>
+                            {fullscreenExitCount > 0 && `⚠️ Fullscreen violations: ${fullscreenExitCount}`}
+                            {fullscreenExitCount > 0 && multipleMonitorCount > 0 && ' | '}
+                            {multipleMonitorCount > 0 && `🖥️ Monitor violations: ${multipleMonitorCount}`}
+                        </p>
+
+                        {!multipleMonitors && (
+                            <button
+                                onClick={() => {
+                                    if (containerRef.current) {
+                                        containerRef.current.requestFullscreen().catch(() => { })
+                                    }
+                                }}
+                                style={{
+                                    background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '1rem 2.5rem',
+                                    borderRadius: '0.75rem',
+                                    fontSize: '1.1rem',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    boxShadow: '0 4px 15px rgba(59, 130, 246, 0.4)',
+                                    transition: 'transform 0.2s, box-shadow 0.2s',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.75rem',
+                                    margin: '0 auto'
+                                }}
+                                onMouseOver={(e) => { e.target.style.transform = 'scale(1.05)'; e.target.style.boxShadow = '0 6px 20px rgba(59, 130, 246, 0.6)' }}
+                                onMouseOut={(e) => { e.target.style.transform = 'scale(1)'; e.target.style.boxShadow = '0 4px 15px rgba(59, 130, 246, 0.4)' }}
+                            >
+                                <Shield size={20} />
+                                Re-enter Fullscreen
+                            </button>
+                        )}
+
+                        {multipleMonitors && (
+                            <div style={{ color: '#94a3b8', fontSize: '0.85rem', padding: '1rem', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '0.75rem', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+                                <Monitor size={16} style={{ marginRight: '0.5rem', verticalAlign: 'middle' }} />
+                                Waiting for external displays to be disconnected...
+                                <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: '#64748b' }}>The system checks every 5 seconds automatically.</div>
+                            </div>
+                        )}
+                    </div>
                 </div>
             )}
 
@@ -845,9 +1114,11 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                             {copyPasteAttempts > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>📋 {copyPasteAttempts} copy attempts</span>}
                             {cameraBlockedCount > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>📹 {cameraBlockedCount} cam blocks</span>}
                             {phoneDetectionCount > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>📱 {phoneDetectionCount} phone detected</span>}
+                            {fullscreenExitCount > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>🖥️ {fullscreenExitCount} fullscreen exits</span>}
                             {faceNotDetectedCount > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>👤 {faceNotDetectedCount} face missing</span>}
                             {multipleFacesDetectionCount > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>👥 {multipleFacesDetectionCount} multi-face</span>}
                             {faceLookawayCount > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>👀 {faceLookawayCount} lookaway</span>}
+                            {multipleMonitorCount > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>🖥️ {multipleMonitorCount} multi-monitor</span>}
                         </div>
                     </div>
                 </div>
@@ -991,6 +1262,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                         <ul style={{ margin: 0, paddingLeft: '1.25rem', color: '#94a3b8', fontSize: '0.8rem', lineHeight: 1.8 }}>
                             <li>Do not switch tabs or windows</li>
                             <li>Do not exit fullscreen mode</li>
+                            <li>Do not use multiple monitors</li>
                             <li>All violations are recorded</li>
                             <li>3+ violations may result in disqualification</li>
                         </ul>
