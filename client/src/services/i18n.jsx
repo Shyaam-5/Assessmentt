@@ -7,7 +7,7 @@ import { createContext, useContext, useState, useCallback } from 'react'
 const translations = {
     en: {
         // Common
-        app_name: 'AI Mentor Hub',
+        app_name: 'AI Assessment Hub',
         loading: 'Loading...',
         save: 'Save',
         cancel: 'Cancel',
@@ -229,7 +229,7 @@ const translations = {
 
     ta: {
         // Tamil
-        app_name: 'AI வழிகாட்டி மையம்',
+        app_name: 'AI மதிப்பீட்டு மையம்',
         loading: 'ஏற்றுகிறது...',
         save: 'சேமி',
         cancel: 'ரத்து',
@@ -439,7 +439,7 @@ const translations = {
 
     hi: {
         // Hindi
-        app_name: 'AI मेंटर हब',
+        app_name: 'AI असेसमेंट हब',
         loading: 'लोड हो रहा है...',
         save: 'सेव करें',
         cancel: 'रद्द करें',

@@ -1,8 +1,8 @@
-// Service Worker for AI Mentor Hub PWA
+// Service Worker for AI Assessment Hub PWA
 // Features: Caching, Offline Support, Background Sync
 
-const CACHE_NAME = 'mentor-hub-v1'
-const API_CACHE = 'mentor-hub-api-v1'
+const CACHE_NAME = 'assessment-hub-v1'
+const API_CACHE = 'assessment-hub-api-v1'
 const OFFLINE_URL = '/offline.html'
 
 // Static assets to pre-cache
@@ -198,7 +198,7 @@ async function syncOfflineProgress() {
 // IndexedDB helper
 function openDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open('MentorHubOffline', 1)
+        const request = indexedDB.open('AssessmentHubOffline', 1)
         request.onupgradeneeded = (e) => {
             const db = e.target.result
             if (!db.objectStoreNames.contains('offlineQueue')) {
@@ -223,7 +223,7 @@ function getAllFromStore(store) {
 
 // Push notifications (for future use)
 self.addEventListener('push', (event) => {
-    const data = event.data?.json() || { title: 'Mentor Hub', body: 'New notification' }
+    const data = event.data?.json() || { title: 'AI Assessment Hub', body: 'New notification' }
     event.waitUntil(
         self.registration.showNotification(data.title, {
             body: data.body,

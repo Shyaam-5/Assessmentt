@@ -1,7 +1,7 @@
 // Feature 76: Offline Mode - Work offline, sync when online
 // IndexedDB-backed offline queue + cached data store
 
-const DB_NAME = 'MentorHubOffline'
+const DB_NAME = 'AssessmentHubOffline'
 const DB_VERSION = 1
 const QUEUE_STORE = 'offlineQueue'
 const DATA_STORE = 'cachedData'
