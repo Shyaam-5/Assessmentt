@@ -1,2 +1,0 @@
-# Wrapper requirements file for platforms (e.g., Render) that run pip from repo root.
--r backend/requirements.txt

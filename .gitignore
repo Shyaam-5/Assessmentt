@@ -3,6 +3,10 @@
 backend/.env
 server.js
 
+# Frontend dependencies & build output
+client/node_modules/
+client/dist/
+
 # Legacy communication module sandbox (not part of app)
 coms/
 
