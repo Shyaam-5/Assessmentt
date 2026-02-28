@@ -14,6 +14,7 @@ import UserManagement from '../components/UserManagement'
 
 import FileUpload from '../components/FileUpload'
 import SkillTestManager from '../components/SkillTestManager'
+import CommTestManager from '../components/CommTestManager'
 import SkillSubmissions from '../components/SkillSubmissions'
 import { useAuth } from '../App'
 import { useI18n } from '../services/i18n.jsx'
@@ -88,6 +89,10 @@ function AdminPortal() {
                 setTitle('Skill Tests')
                 setSubtitle('Create and manage AI skill assessments')
                 break
+            case 'communication-tests':
+                setTitle('Communication Tests')
+                setSubtitle('Create and manage AI communication assessments')
+                break
             case 'skill-submissions':
                 setTitle('Skill Test Submissions')
                 setSubtitle('View all student skill test results')
@@ -108,7 +113,8 @@ function AdminPortal() {
                 { path: '/admin/global-problems', label: t('global_problems'), icon: <FileCode size={20} /> },
                 { path: '/admin/aptitude-tests', label: t('aptitude_tests'), icon: <Target size={20} /> },
                 { path: '/admin/global-tests', label: t('global_complete_tests'), icon: <ClipboardList size={20} /> },
-                { path: '/admin/skill-tests', label: 'Skill Tests', icon: <Brain size={20} /> }
+                { path: '/admin/skill-tests', label: 'Skill Tests', icon: <Brain size={20} /> },
+                { path: '/admin/communication-tests', label: 'Communication Tests', icon: <MessageSquare size={20} /> }
             ]
         },
 
@@ -150,6 +156,7 @@ function AdminPortal() {
                 <Route path="/aptitude-tests" element={<AptitudeTestsAdmin />} />
                 <Route path="/global-tests" element={<GlobalTestsAdmin />} />
                 <Route path="/skill-tests" element={<SkillTestManager />} />
+                <Route path="/communication-tests" element={<CommTestManager />} />
                 <Route path="/skill-submissions" element={<SkillSubmissions user={user} isAdmin={true} />} />
                 <Route path="/student-leaderboard" element={<StudentLeaderboard />} />
 

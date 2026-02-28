@@ -129,6 +129,7 @@ from routes.skill_tests import router as skill_tests_router
 from routes.aptitude import router as aptitude_router
 from routes.global_tests import router as global_tests_router
 from routes.admin import router as admin_router
+from routes.communication import router as comm_router
 
 app.include_router(auth_router)
 app.include_router(tasks_router)
@@ -144,6 +145,7 @@ app.include_router(leaderboard_router)
 app.include_router(aptitude_router)
 app.include_router(global_tests_router)
 app.include_router(admin_router)
+app.include_router(comm_router)
 
 
 # ─── Health check ────────────────────────────────────────────────
@@ -157,6 +159,8 @@ async def health_check():
 
 uploads_dir = os.path.join(os.path.dirname(__file__), "uploads", "proctoring")
 os.makedirs(uploads_dir, exist_ok=True)
+tts_dir = os.path.join(os.path.dirname(__file__), "uploads", "tts")
+os.makedirs(tts_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "uploads")), name="uploads")
 
 
