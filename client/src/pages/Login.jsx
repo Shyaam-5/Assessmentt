@@ -157,10 +157,10 @@ function AIIllustration() {
 
             <h3 className="illustration-title">
                 <Sparkles size={20} />
-                AI-Powered Learning
+                AI-Powered Proctoring
             </h3>
             <p className="illustration-desc">
-                Experience intelligent code evaluation and personalized feedback
+                Secure assessments with intelligent monitoring and real-time evaluation
             </p>
         </div>
     )
@@ -209,19 +209,19 @@ function Login() {
                 <div className="hero-section">
                     <div className="hero-badge">
                         <Brain size={16} />
-                        <span>AI & Data Science Learning Platform</span>
+                        <span>AI-Powered Assessment & Proctoring Platform</span>
                     </div>
                     <h1 className="hero-title">
-                        Learn
-                        with Mentors
+                        Secure
+                        Assessments
                     </h1>
                     <p className="hero-subtitle">
-                        Learn Machine Learning, Deep Learning, and Data Analytics
-                        with personalized mentorship, hands-on projects, and AI-powered
-                        code evaluation.
+                        AI-proctored coding tests, aptitude assessments, and skill evaluations
+                        with real-time monitoring, intelligent cheating detection, and
+                        comprehensive analytics.
                     </p>
                     <button className="cta-button" onClick={() => setShowLoginPanel(true)}>
-                        Get Started - It's Free <ArrowRight size={18} />
+                        Get Started <ArrowRight size={18} />
                     </button>
                 </div>
 
@@ -240,7 +240,7 @@ function Login() {
                                     <Brain size={32} />
                                 </div>
                                 <h2>Welcome Back</h2>
-                                <p>Sign in to continue your AI learning journey</p>
+                                <p>Sign in to access your assessment portal</p>
                             </div>
 
                             <form onSubmit={handleSubmit} className="login-form">
