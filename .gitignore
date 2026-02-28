@@ -2,3 +2,9 @@
 .venv
 backend/.env
 server.js
+
+# Legacy communication module sandbox (not part of app)
+coms/
+
+# Local DB artifacts
+*.db
