@@ -5,7 +5,7 @@ proctoring, reports, and admin operations (28 endpoints total).
 """
 
 from __future__ import annotations
-import json, re, datetime
+import asyncio, json, re, datetime
 from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Body
 from database import get_pool
@@ -640,6 +640,34 @@ async def interview_answer(body: dict = Body(...)):
 #  PROCTORING
 # ═══════════════════════════════════════════════════════════════════
 
+# ── Agent analysis trigger (per attempt, in-memory) ──
+_skill_agent_counter: dict[str, int] = {}
+_SKILL_AGENT_INTERVAL = 5
+
+
+async def _maybe_trigger_skill_agent(attempt_id: str, severity: str):
+    """Fire-and-forget agent analysis on skill test proctoring events."""
+    try:
+        from services.proctor_agent import agent_analyze_session, save_analysis
+        result = await agent_analyze_session(str(attempt_id), "skill")
+        if result.get("fraud_score", 0) > 0:
+            await save_analysis({**result, "source": "skill"})
+            if result.get("fraud_score", 0) >= 35:
+                try:
+                    from main import sio
+                    await sio.emit("agent_alert", {
+                        "type": "agent_analysis",
+                        "session_id": str(attempt_id),
+                        "fraud_score": result["fraud_score"],
+                        "risk_level": result.get("risk_level"),
+                        "recommended_action": result.get("recommended_action"),
+                    }, room="admin_room")
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[ProctorAgent] skill analysis error: {e}")
+
+
 @router.post("/proctoring/log")
 async def proctoring_log(body: dict = Body(...)):
     attempt_id = body.get("attemptId")
@@ -652,6 +680,13 @@ async def proctoring_log(body: dict = Body(...)):
             if severity == "high":
                 await cur.execute("UPDATE skill_test_attempts SET mcq_violations = COALESCE(mcq_violations,0)+1 WHERE id=%s", (attempt_id,))
         await conn.commit()
+
+    # ── Trigger Proctor Intelligence Agent (background, non-blocking) ──
+    aid = str(attempt_id) if attempt_id else ""
+    _skill_agent_counter[aid] = _skill_agent_counter.get(aid, 0) + 1
+    if severity in ("high", "critical") or _skill_agent_counter[aid] % _SKILL_AGENT_INTERVAL == 0:
+        asyncio.create_task(_maybe_trigger_skill_agent(attempt_id, severity))
+
     return {"success": True}
 
 # ═══════════════════════════════════════════════════════════════════

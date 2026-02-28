@@ -15,6 +15,7 @@ import UserManagement from '../components/UserManagement'
 import FileUpload from '../components/FileUpload'
 import SkillTestManager from '../components/SkillTestManager'
 import CommTestManager from '../components/CommTestManager'
+import ProctorAgentDashboard from '../components/ProctorAgentDashboard'
 import SkillSubmissions from '../components/SkillSubmissions'
 import { useAuth } from '../App'
 import { useI18n } from '../services/i18n.jsx'
@@ -97,6 +98,10 @@ function AdminPortal() {
                 setTitle('Skill Test Submissions')
                 setSubtitle('View all student skill test results')
                 break
+            case 'proctor-agent':
+                setTitle('Proctoring Intelligence Agent')
+                setSubtitle('AI-powered fraud detection & exam integrity')
+                break
             default:
                 setTitle(t('dashboard'))
                 setSubtitle(t('system_administration'))
@@ -135,6 +140,7 @@ function AdminPortal() {
                 { path: '/admin/all-submissions', label: t('all_submissions'), icon: <List size={20} /> },
                 { path: '/admin/skill-submissions', label: 'Skill Submissions', icon: <Brain size={20} /> },
                 { path: '/admin/live-monitoring', label: t('live_monitoring'), icon: <Activity size={20} /> },
+                { path: '/admin/proctor-agent', label: 'Proctor Agent', icon: <Brain size={20} /> },
                 { path: '/admin/analytics', label: t('analytics'), icon: <TrendingUp size={20} /> }
             ]
         },
@@ -163,6 +169,7 @@ function AdminPortal() {
                 <Route path="/all-submissions" element={<AllSubmissions />} />
                 <Route path="/live-monitoring" element={<AdminLiveMonitoring user={user} />} />
                 <Route path="/analytics" element={<AdminAnalyticsDashboard />} />
+                <Route path="/proctor-agent" element={<ProctorAgentDashboard />} />
                 <Route path="/user-management" element={<UserManagement />} />
             </Routes>
         </DashboardLayout>

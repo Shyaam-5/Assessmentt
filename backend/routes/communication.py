@@ -11,6 +11,7 @@ Provides endpoints for four English communication training modules:
 Plus a performance report endpoint and admin test management.
 """
 
+import asyncio
 import json
 import os
 import random
@@ -348,6 +349,37 @@ async def _ensure_proctor_table():
         _proctor_table_ready = True
 
 
+# ── Agent analysis event counter (per session, in-memory) ──
+_agent_event_counter: dict[str, int] = {}
+_AGENT_TRIGGER_INTERVAL = 5  # run agent every N events
+_AGENT_TRIGGER_SEVERITIES = {"high", "critical"}  # always trigger on these
+
+
+async def _maybe_trigger_agent(session_id: str, severity: str, user_id: str = ""):
+    """Fire-and-forget agent analysis on accumulated events."""
+    try:
+        from services.proctor_agent import agent_analyze_session, save_analysis
+        result = await agent_analyze_session(session_id, "comm", user_id=user_id)
+        if result.get("fraud_score", 0) > 0:
+            await save_analysis({**result, "source": "comm"})
+            # Emit real-time alert to admins if score is concerning
+            if result.get("fraud_score", 0) >= 35:
+                try:
+                    from main import sio
+                    await sio.emit("agent_alert", {
+                        "type": "agent_analysis",
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "fraud_score": result["fraud_score"],
+                        "risk_level": result.get("risk_level"),
+                        "recommended_action": result.get("recommended_action"),
+                    }, room="admin_room")
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[ProctorAgent] background analysis error: {e}")
+
+
 @router.post("/proctoring/log")
 async def proctoring_log(request: Request):
     """Log a proctoring violation event."""
@@ -368,6 +400,16 @@ async def proctoring_log(request: Request):
                 (user_id, session_id, event_type, severity, str(details)),
             )
         await conn.commit()
+
+    # ── Trigger Proctor Intelligence Agent (background, non-blocking) ──
+    _agent_event_counter[session_id] = _agent_event_counter.get(session_id, 0) + 1
+    should_trigger = (
+        severity in _AGENT_TRIGGER_SEVERITIES
+        or _agent_event_counter[session_id] % _AGENT_TRIGGER_INTERVAL == 0
+    )
+    if should_trigger:
+        asyncio.create_task(_maybe_trigger_agent(session_id, severity, user_id))
+
     return {"success": True}
 
 

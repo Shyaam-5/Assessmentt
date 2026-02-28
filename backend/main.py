@@ -130,6 +130,7 @@ from routes.aptitude import router as aptitude_router
 from routes.global_tests import router as global_tests_router
 from routes.admin import router as admin_router
 from routes.communication import router as comm_router
+from routes.proctor_agent import router as proctor_agent_router
 
 app.include_router(auth_router)
 app.include_router(tasks_router)
@@ -146,6 +147,7 @@ app.include_router(aptitude_router)
 app.include_router(global_tests_router)
 app.include_router(admin_router)
 app.include_router(comm_router)
+app.include_router(proctor_agent_router)
 
 
 # ─── Health check ────────────────────────────────────────────────
