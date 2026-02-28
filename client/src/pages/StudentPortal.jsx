@@ -13,6 +13,7 @@ import SQLDebugger from '@/components/SQLDebugger'
 
 import SkillTestPortal from '@/components/SkillTestPortal'
 import SkillSubmissions from '@/components/SkillSubmissions'
+import CommunicationHub from '@/components/CommunicationHub'
 import { useAuth } from '../App'
 import { useI18n } from '../services/i18n.jsx'
 import axios from 'axios'
@@ -87,6 +88,10 @@ function StudentPortal() {
                 setTitle('Skill Test Submissions')
                 setSubtitle('View your skill test results & reports')
                 break
+            case 'communication':
+                setTitle('Communication Skills')
+                setSubtitle('Practice English speaking, listening & grammar with AI feedback')
+                break
             default:
                 setTitle(t('dashboard'))
                 setSubtitle(t('welcome_back_name', { name: user?.name || '' }))
@@ -103,7 +108,8 @@ function StudentPortal() {
                 { path: '/student/assignments', label: t('coding_problems'), icon: <Code size={20} /> },
                 { path: '/student/aptitude', label: t('aptitude_tests'), icon: <Brain size={20} /> },
                 { path: '/student/global-tests', label: t('global_complete_tests'), icon: <Layers size={20} /> },
-                { path: '/student/skill-tests', label: 'Skill Tests', icon: <Target size={20} /> }
+                { path: '/student/skill-tests', label: 'Skill Tests', icon: <Target size={20} /> },
+                { path: '/student/communication', label: 'Communication', icon: <MessageSquare size={20} /> }
             ]
         },
         {
@@ -127,6 +133,7 @@ function StudentPortal() {
                 <Route path="/global-tests" element={<GlobalTests user={user} />} />
                 <Route path="/skill-tests" element={<SkillTestPortal user={user} />} />
                 <Route path="/skill-submissions" element={<SkillSubmissions user={user} />} />
+                <Route path="/communication" element={<CommunicationHub user={user} />} />
                 <Route path="/submissions" element={<Submissions user={user} />} />
                 <Route path="/analytics" element={<StudentAnalytics user={user} />} />
             </Routes>
