@@ -87,6 +87,132 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
     const proctoring = problem.proctoring || {}
     const maxTabSwitches = proctoring.maxTabSwitches || 3
 
+    // ============ BEHAVIOR TRACKING ============
+    const behaviorSessionId = useRef(`beh_${user.id}_${problem.id}_${Date.now()}`)
+    const behaviorEventsBuffer = useRef([])
+    const lastKeystrokeTime = useRef(Date.now())
+    const codeSnapshotInterval = useRef(null)
+    const behaviorSendInterval = useRef(null)
+    const lastCodeSnapshot = useRef('')
+    const idleTimerRef = useRef(null)
+    const BEHAVIOR_SEND_INTERVAL_MS = 15000  // Send every 15s
+    const CODE_SNAPSHOT_INTERVAL_MS = 30000  // Snapshot every 30s
+    const IDLE_DETECT_MS = 30000             // 30s = idle
+
+    // Push a behavior event into the buffer
+    const pushBehaviorEvent = useCallback((type, data = {}) => {
+        behaviorEventsBuffer.current.push({
+            type,
+            timestamp: new Date().toISOString(),
+            ...data,
+        })
+    }, [])
+
+    // Flush behavior events to backend
+    const flushBehaviorEvents = useCallback(async () => {
+        if (behaviorEventsBuffer.current.length === 0) return
+        const events = [...behaviorEventsBuffer.current]
+        behaviorEventsBuffer.current = []
+        try {
+            await axios.post(`${API_BASE}/behavior/log-events`, {
+                session_id: behaviorSessionId.current,
+                user_id: user.id,
+                events,
+            })
+        } catch (err) {
+            // Re-queue failed events (drop if buffer too large)
+            if (behaviorEventsBuffer.current.length < 500) {
+                behaviorEventsBuffer.current = [...events, ...behaviorEventsBuffer.current]
+            }
+        }
+    }, [user.id])
+
+    // Track editor content changes (keystrokes + code snapshots)
+    const handleEditorChange = useCallback((value) => {
+        setCode(value || '')
+
+        // Keystroke tracking
+        const now = Date.now()
+        const gap = now - lastKeystrokeTime.current
+        lastKeystrokeTime.current = now
+        pushBehaviorEvent('keystroke', { gap_ms: Math.min(gap, 60000) })
+
+        // Reset idle timer
+        if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
+        idleTimerRef.current = setTimeout(() => {
+            pushBehaviorEvent('idle')
+        }, IDLE_DETECT_MS)
+    }, [pushBehaviorEvent])
+
+    // Periodic code snapshots
+    useEffect(() => {
+        if (!proctoring.enabled) return
+
+        codeSnapshotInterval.current = setInterval(() => {
+            const currentCode = code || ''
+            if (currentCode !== lastCodeSnapshot.current) {
+                const lines = currentCode.split('\n').length
+                const chars = currentCode.length
+                pushBehaviorEvent('code_snapshot', {
+                    line_count: lines,
+                    char_count: chars,
+                })
+                lastCodeSnapshot.current = currentCode
+            }
+        }, CODE_SNAPSHOT_INTERVAL_MS)
+
+        return () => {
+            if (codeSnapshotInterval.current) clearInterval(codeSnapshotInterval.current)
+        }
+    }, [proctoring.enabled, code, pushBehaviorEvent])
+
+    // Periodic flush of behavior events to backend
+    useEffect(() => {
+        if (!proctoring.enabled) return
+
+        behaviorSendInterval.current = setInterval(flushBehaviorEvents, BEHAVIOR_SEND_INTERVAL_MS)
+
+        // Track engagement: mouse + scroll + focus/blur
+        const handleMouseMove = () => pushBehaviorEvent('mouse')
+        const throttledMouse = (() => {
+            let last = 0
+            return () => { const now = Date.now(); if (now - last > 5000) { last = now; handleMouseMove() } }
+        })()
+        const handleScroll = () => pushBehaviorEvent('scroll')
+        const throttledScroll = (() => {
+            let last = 0
+            return () => { const now = Date.now(); if (now - last > 5000) { last = now; handleScroll() } }
+        })()
+        const handleFocus = () => pushBehaviorEvent('focus')
+        const handleBlur = () => pushBehaviorEvent('blur')
+
+        document.addEventListener('mousemove', throttledMouse)
+        document.addEventListener('scroll', throttledScroll, true)
+        window.addEventListener('focus', handleFocus)
+        window.addEventListener('blur', handleBlur)
+
+        // Send initial code snapshot
+        const initCode = code || ''
+        if (initCode) {
+            pushBehaviorEvent('code_snapshot', {
+                line_count: initCode.split('\n').length,
+                char_count: initCode.length,
+            })
+            lastCodeSnapshot.current = initCode
+        }
+
+        return () => {
+            if (behaviorSendInterval.current) clearInterval(behaviorSendInterval.current)
+            document.removeEventListener('mousemove', throttledMouse)
+            document.removeEventListener('scroll', throttledScroll, true)
+            window.removeEventListener('focus', handleFocus)
+            window.removeEventListener('blur', handleBlur)
+            if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
+            // Final flush on unmount
+            flushBehaviorEvents()
+        }
+    }, [proctoring.enabled]) // eslint-disable-line react-hooks/exhaustive-deps
+
     // Request fullscreen on mount
     useEffect(() => {
         const requestFullscreen = () => {
@@ -1402,7 +1528,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                             language={LANGUAGE_CONFIG[selectedLanguage]?.monacoLang || 'python'}
                             theme="vs-dark"
                             value={code}
-                            onChange={(value) => setCode(value || '')}
+                            onChange={handleEditorChange}
                             options={{
                                 minimap: { enabled: false },
                                 fontSize: 14,

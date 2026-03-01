@@ -16,6 +16,7 @@ import FileUpload from '../components/FileUpload'
 import SkillTestManager from '../components/SkillTestManager'
 import CommTestManager from '../components/CommTestManager'
 import ProctorAgentDashboard from '../components/ProctorAgentDashboard'
+import BehaviorAnalysisDashboard from '../components/BehaviorAnalysisDashboard'
 import SkillSubmissions from '../components/SkillSubmissions'
 import { useAuth } from '../App'
 import { useI18n } from '../services/i18n.jsx'
@@ -102,6 +103,10 @@ function AdminPortal() {
                 setTitle('Proctoring Intelligence Agent')
                 setSubtitle('AI-powered fraud detection & exam integrity')
                 break
+            case 'behavior-analysis':
+                setTitle('Behavior Analysis Agent')
+                setSubtitle('AI-powered behavioral profiling & trust scoring')
+                break
             default:
                 setTitle(t('dashboard'))
                 setSubtitle(t('system_administration'))
@@ -141,6 +146,7 @@ function AdminPortal() {
                 { path: '/admin/skill-submissions', label: 'Skill Submissions', icon: <Brain size={20} /> },
                 { path: '/admin/live-monitoring', label: t('live_monitoring'), icon: <Activity size={20} /> },
                 { path: '/admin/proctor-agent', label: 'Proctor Agent', icon: <Brain size={20} /> },
+                { path: '/admin/behavior-analysis', label: 'Behavior Analysis', icon: <Shield size={20} /> },
                 { path: '/admin/analytics', label: t('analytics'), icon: <TrendingUp size={20} /> }
             ]
         },
@@ -170,6 +176,7 @@ function AdminPortal() {
                 <Route path="/live-monitoring" element={<AdminLiveMonitoring user={user} />} />
                 <Route path="/analytics" element={<AdminAnalyticsDashboard />} />
                 <Route path="/proctor-agent" element={<ProctorAgentDashboard />} />
+                <Route path="/behavior-analysis" element={<BehaviorAnalysisDashboard />} />
                 <Route path="/user-management" element={<UserManagement />} />
             </Routes>
         </DashboardLayout>
