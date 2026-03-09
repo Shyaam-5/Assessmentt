@@ -913,6 +913,18 @@ async def get_behavior_dashboard_stats() -> dict:
     }
 
 
+async def clear_behavior_data() -> bool:
+    """Clear all behavior events and analyses from the database."""
+    await _ensure_behavior_tables()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("TRUNCATE TABLE behavior_events")
+            await cur.execute("TRUNCATE TABLE behavior_analyses")
+        await conn.commit()
+    return True
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Internal helpers
 # ═══════════════════════════════════════════════════════════════

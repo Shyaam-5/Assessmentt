@@ -17,7 +17,7 @@ import {
     Shield, Brain, Activity, AlertTriangle, CheckCircle,
     Eye, Search, FileText, BarChart3, TrendingUp,
     Clock, Keyboard, Code2, MousePointer, AlertCircle, XCircle,
-    ChevronRight, RefreshCw, Zap, Target
+    ChevronRight, RefreshCw, Zap, Target, Trash2
 } from 'lucide-react'
 import axios from 'axios'
 
@@ -251,6 +251,25 @@ export default function BehaviorAnalysisDashboard() {
         }
     }
 
+    // ── Clear all data ──
+    const clearAllData = async () => {
+        if (!window.confirm("Are you sure you want to clear ALL behavior events and analyses? This cannot be undone.")) return;
+        setLoading(true)
+        try {
+            await axios.delete(`${API_BASE}/behavior/clear`)
+            alert('All behavior data cleared successfully.')
+            fetchDashboard()
+            fetchAnalyses()
+            fetchSessions()
+            setAnalyzeResult(null)
+            setReportResult(null)
+        } catch (err) {
+            alert('Failed to clear data: ' + (err.response?.data?.detail || err.message))
+        } finally {
+            setLoading(false)
+        }
+    }
+
     // ── Generate report ──
     const generateReport = async () => {
         if (!reportForm.session_id) return
@@ -332,6 +351,7 @@ export default function BehaviorAnalysisDashboard() {
                     sessionsLoading={sessionsLoading}
                     onFetchSessions={fetchSessions}
                     onSelectSession={(s) => selectSession(s, 'analyze')}
+                    onClearData={clearAllData}
                 />
             )}
             {tab === 'report' && (
@@ -488,7 +508,7 @@ function DashboardTab({ dashboard, analyses, onViewDetail, onRefresh }) {
 //  Analyze Session Tab
 // ═══════════════════════════════════════════════════════════════
 
-function AnalyzeTab({ form, setForm, onRun, onRunAll, result, loading, autoRunProgress, sessions, sessionsLoading, onFetchSessions, onSelectSession }) {
+function AnalyzeTab({ form, setForm, onRun, onRunAll, result, loading, autoRunProgress, sessions, sessionsLoading, onFetchSessions, onSelectSession, onClearData }) {
     return (
         <div>
             {/* Available sessions - admin can pick one */}
@@ -499,13 +519,22 @@ function AnalyzeTab({ form, setForm, onRun, onRunAll, result, loading, autoRunPr
                 <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: '#64748b' }}>
                     Sessions with behavior events. Click one to use its Session ID.
                 </p>
-                <button
-                    onClick={() => { onFetchSessions() }}
-                    disabled={sessionsLoading}
-                    style={{ ...btnStyle, background: '#1e293b', color: '#94a3b8', marginBottom: 12 }}
-                >
-                    {sessionsLoading ? <RefreshCw size={14} className="spin" /> : <RefreshCw size={14} />} Load Sessions
-                </button>
+                <div style={{ display: 'flex', gap: '10px', marginBottom: 12 }}>
+                    <button
+                        onClick={() => { onFetchSessions() }}
+                        disabled={sessionsLoading}
+                        style={{ ...btnStyle, background: '#1e293b', color: '#94a3b8' }}
+                    >
+                        {sessionsLoading ? <RefreshCw size={14} className="spin" /> : <RefreshCw size={14} />} Load Sessions
+                    </button>
+                    <button
+                        onClick={onClearData}
+                        disabled={loading}
+                        style={{ ...btnStyle, background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)' }}
+                    >
+                        <Trash2 size={14} /> Clear All Data
+                    </button>
+                </div>
                 {sessions.length === 0 && !sessionsLoading && (
                     <p style={{ color: '#64748b', fontSize: '0.85rem', margin: 0 }}>No sessions yet. Students must complete a proctored coding session first.</p>
                 )}
@@ -524,8 +553,8 @@ function AnalyzeTab({ form, setForm, onRun, onRunAll, result, loading, autoRunPr
                                 <div style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: '#e2e8f0', wordBreak: 'break-all' }}>
                                     {s.session_id}
                                 </div>
-                                <div style={{ fontSize: '0.75rem', color: '#64748b', flexShrink: 0, marginLeft: 8 }}>
-                                    {s.user_id} • {s.event_count} events
+                                <div style={{ fontSize: '0.75rem', color: '#64748b', flexShrink: 0, marginLeft: 8, whiteSpace: 'nowrap' }}>
+                                    {s.user_id} • {s.event_count} events • {new Date(s.last_event).toLocaleString()}
                                 </div>
                             </div>
                         ))}
