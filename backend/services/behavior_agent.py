@@ -820,6 +820,49 @@ async def get_recent_behavior_analyses(limit: int = 50) -> list[dict]:
     ]
 
 
+async def get_behavior_sessions(limit: int = 50) -> list[dict]:
+    """List sessions that have behavior events (for admin to select and analyze)."""
+    await _ensure_behavior_tables()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT e.session_id, e.user_id,
+                       COUNT(e.id) AS event_count,
+                       MIN(e.timestamp) AS first_event,
+                       MAX(e.timestamp) AS last_event
+                FROM behavior_events e
+                LEFT JOIN behavior_analyses a ON e.session_id = a.session_id
+                WHERE a.session_id IS NULL
+                GROUP BY e.session_id, e.user_id
+                ORDER BY MAX(e.timestamp) DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = await cur.fetchall()
+
+    return [
+        {
+            "session_id": r.get("session_id"),
+            "user_id": r.get("user_id"),
+            "event_count": r.get("event_count", 0),
+            "first_event": (
+                r["first_event"].isoformat()
+                if isinstance(r.get("first_event"), datetime)
+                else str(r.get("first_event", ""))
+            ),
+            "last_event": (
+                r["last_event"].isoformat()
+                if isinstance(r.get("last_event"), datetime)
+                else str(r.get("last_event", ""))
+            ),
+        }
+        for r in rows
+    ]
+
+
 async def get_behavior_dashboard_stats() -> dict:
     """Aggregate stats for the admin behavior dashboard."""
     await _ensure_behavior_tables()

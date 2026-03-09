@@ -146,8 +146,6 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
 
     // Periodic code snapshots
     useEffect(() => {
-        if (!proctoring.enabled) return
-
         codeSnapshotInterval.current = setInterval(() => {
             const currentCode = code || ''
             if (currentCode !== lastCodeSnapshot.current) {
@@ -164,12 +162,10 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         return () => {
             if (codeSnapshotInterval.current) clearInterval(codeSnapshotInterval.current)
         }
-    }, [proctoring.enabled, code, pushBehaviorEvent])
+    }, [code, pushBehaviorEvent])
 
     // Periodic flush of behavior events to backend
     useEffect(() => {
-        if (!proctoring.enabled) return
-
         behaviorSendInterval.current = setInterval(flushBehaviorEvents, BEHAVIOR_SEND_INTERVAL_MS)
 
         // Track engagement: mouse + scroll + focus/blur
@@ -211,7 +207,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
             // Final flush on unmount
             flushBehaviorEvents()
         }
-    }, [proctoring.enabled]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
     // Request fullscreen on mount
     useEffect(() => {

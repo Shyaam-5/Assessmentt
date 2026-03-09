@@ -127,6 +127,7 @@ from routes.admin import router as admin_router
 from routes.communication import router as comm_router
 from routes.proctor_agent import router as proctor_agent_router
 from routes.behavior_agent import router as behavior_agent_router
+from routes.ai import router as ai_router
 
 app.include_router(auth_router)
 app.include_router(tasks_router)
@@ -145,6 +146,7 @@ app.include_router(admin_router)
 app.include_router(comm_router)
 app.include_router(proctor_agent_router)
 app.include_router(behavior_agent_router)
+app.include_router(ai_router)
 
 
 # ─── Health check ────────────────────────────────────────────────

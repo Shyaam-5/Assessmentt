@@ -16,6 +16,7 @@ from services.behavior_agent import (
     agent_generate_behavior_report,
     get_recent_behavior_analyses,
     get_behavior_dashboard_stats,
+    get_behavior_sessions,
 )
 from database import get_pool
 
@@ -94,6 +95,16 @@ async def generate_behavior_report(req: ReportRequest):
         return report
     except Exception as e:
         raise HTTPException(500, detail=f"Report generation failed: {e}")
+
+
+@router.get("/sessions")
+async def list_behavior_sessions(limit: int = Query(50, ge=1, le=200)):
+    """List sessions with behavior events. Admin can select one to analyze."""
+    try:
+        sessions = await get_behavior_sessions(limit)
+        return {"sessions": sessions}
+    except Exception as e:
+        raise HTTPException(500, detail=f"Failed to fetch sessions: {e}")
 
 
 @router.get("/dashboard")
