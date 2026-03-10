@@ -5,7 +5,7 @@ proctoring, reports, and admin operations (28 endpoints total).
 """
 
 from __future__ import annotations
-import json, re, datetime
+import asyncio, json, re, datetime
 from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Body
 from database import get_pool
@@ -640,11 +640,66 @@ async def interview_answer(body: dict = Body(...)):
 #  PROCTORING
 # ═══════════════════════════════════════════════════════════════════
 
+# ── Agent analysis trigger (per attempt, in-memory) ──
+_skill_agent_counter: dict[str, int] = {}
+_SKILL_AGENT_INTERVAL = 5
+
+
+async def _maybe_trigger_skill_agent(attempt_id: str, severity: str, user_id: str = ""):
+    """Fire-and-forget agent analysis on skill test proctoring events."""
+    try:
+        from services.proctor_agent import agent_analyze_session, save_analysis
+        result = await agent_analyze_session(str(attempt_id), "skill", user_id=user_id)
+        if result.get("fraud_score", 0) > 0:
+            await save_analysis({**result, "source": "skill"})
+            if result.get("fraud_score", 0) >= 35:
+                try:
+                    from main import sio
+                    await sio.emit("agent_alert", {
+                        "type": "agent_analysis",
+                        "session_id": str(attempt_id),
+                        "fraud_score": result["fraud_score"],
+                        "risk_level": result.get("risk_level"),
+                        "recommended_action": result.get("recommended_action"),
+                    }, room="admin_room")
+                except Exception:
+                    pass
+
+            # AUTO-TERMINATE: If agent recommends termination, notify the student
+            if result.get("recommended_action") == "terminate" or result.get("risk_level") == "terminate":
+                try:
+                    from main import sio
+                    terminate_payload = {
+                        "session_id": str(attempt_id),
+                        "reason": "Proctoring Intelligence Agent detected critical integrity violations.",
+                        "fraud_score": result["fraud_score"],
+                        "risk_level": result.get("risk_level"),
+                        "key_findings": result.get("ai_analysis", {}).get("key_findings", []),
+                    }
+                    await sio.emit("agent_terminate", terminate_payload, room=f"session_{attempt_id}")
+                    if user_id:
+                        await sio.emit("agent_terminate", terminate_payload, room=f"student_{user_id}")
+                    # Also notify admins about the termination
+                    await sio.emit("agent_alert", {
+                        "type": "auto_terminate",
+                        "session_id": str(attempt_id),
+                        "fraud_score": result["fraud_score"],
+                        "risk_level": "terminate",
+                        "recommended_action": "terminate",
+                    }, room="admin_room")
+                    print(f"[ProctorAgent] AUTO-TERMINATE sent for attempt {attempt_id} (score: {result['fraud_score']})")
+                except Exception as e:
+                    print(f"[ProctorAgent] terminate emit error: {e}")
+    except Exception as e:
+        print(f"[ProctorAgent] skill analysis error: {e}")
+
+
 @router.post("/proctoring/log")
 async def proctoring_log(body: dict = Body(...)):
     attempt_id = body.get("attemptId")
     event_type = body.get("event_type", "unknown")
     severity = body.get("severity", "low")
+    user_id = str(body.get("userId", body.get("user_id", "")))
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -652,6 +707,13 @@ async def proctoring_log(body: dict = Body(...)):
             if severity == "high":
                 await cur.execute("UPDATE skill_test_attempts SET mcq_violations = COALESCE(mcq_violations,0)+1 WHERE id=%s", (attempt_id,))
         await conn.commit()
+
+    # ── Trigger Proctor Intelligence Agent (background, non-blocking) ──
+    aid = str(attempt_id) if attempt_id else ""
+    _skill_agent_counter[aid] = _skill_agent_counter.get(aid, 0) + 1
+    if severity in ("high", "critical") or _skill_agent_counter[aid] % _SKILL_AGENT_INTERVAL == 0:
+        asyncio.create_task(_maybe_trigger_skill_agent(attempt_id, severity, user_id))
+
     return {"success": True}
 
 # ═══════════════════════════════════════════════════════════════════
@@ -677,6 +739,29 @@ async def student_submissions(studentId: str = Query(...)):
             await cur.execute("SELECT a.*,t.title as test_title FROM skill_test_attempts a JOIN skill_tests t ON a.test_id=t.id WHERE a.student_id=%s ORDER BY a.created_at DESC", (studentId,))
             rows = await cur.fetchall()
     return [dict(r, report=_safe_json(r.get("report"))) for r in rows]
+
+# ═══════════════════════════════════════════════════════════════════
+#  TERMINATE ATTEMPT (auto-terminate from proctoring violations)
+# ═══════════════════════════════════════════════════════════════════
+
+@router.post("/attempt/{attempt_id}/terminate")
+async def terminate_attempt(attempt_id: int, body: dict = Body(...)):
+    reason = body.get("reason", "Terminated due to proctoring violations")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT id, overall_status FROM skill_test_attempts WHERE id=%s", (attempt_id,))
+            attempt = await cur.fetchone()
+            if not attempt:
+                raise HTTPException(404, "Attempt not found")
+            if attempt["overall_status"] in ("completed", "failed"):
+                return {"success": True, "message": "Attempt already finalized"}
+            await cur.execute(
+                "UPDATE skill_test_attempts SET overall_status='failed', report=%s WHERE id=%s",
+                (_json_str({"terminated": True, "reason": reason, "terminated_at": str(datetime.now())}), attempt_id)
+            )
+        await conn.commit()
+    return {"success": True, "message": "Attempt terminated"}
 
 # ═══════════════════════════════════════════════════════════════════
 #  ADMIN: SUBMISSIONS

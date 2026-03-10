@@ -127,6 +127,10 @@ button {
     }
 }
 
+.spin {
+    animation: spin 1s linear infinite;
+}
+
 
 /* ==================== Global Animations ==================== */
 @keyframes fadeIn {

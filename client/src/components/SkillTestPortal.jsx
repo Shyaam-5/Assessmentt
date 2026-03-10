@@ -6,6 +6,7 @@ import SkillCodingTest from './SkillCodingTest';
 import SkillSQLTest from './SkillSQLTest';
 import SkillAIInterview from './SkillAIInterview';
 import SkillTestReport from './SkillTestReport';
+import socketService from '../services/socketService';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
@@ -49,10 +50,46 @@ export default function SkillTestPortal({ user }) {
 
     const [model, setModel] = useState(null);
 
+    // Agent termination state
+    const [agentTerminated, setAgentTerminated] = useState(false);
+    const [agentTerminateReason, setAgentTerminateReason] = useState('');
+    const terminatedRef = useRef(false);
+    const MAX_VIOLATIONS = 10;
+
     useEffect(() => {
         loadTests();
         loadProctoringModel();
     }, []);
+
+    // ── Finalize attempt as terminated on the backend ──
+    const terminateAttempt = useCallback(async (reason) => {
+        if (terminatedRef.current) return;
+        terminatedRef.current = true;
+        setAgentTerminated(true);
+        setAgentTerminateReason(reason);
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        if (activeAttempt) {
+            try {
+                await axios.post(`${API}/api/skill-tests/attempt/${activeAttempt}/terminate`, { reason });
+            } catch (err) {
+                console.error('Failed to terminate attempt on server:', err);
+            }
+        }
+    }, [activeAttempt]);
+
+    // ── Agent terminate listener — receives real-time kill signal from Proctor Agent ──
+    useEffect(() => {
+        if (!activeAttempt || !user?.id) return;
+        socketService.connect();
+        socketService.joinStudentSession(user.id, String(activeAttempt));
+
+        const handleTerminate = (data) => {
+            console.error('[ProctorAgent] SKILL TEST TERMINATED BY AGENT:', data);
+            terminateAttempt(data?.reason || 'Your test has been terminated by the Proctoring Intelligence Agent due to integrity violations.');
+        };
+        socketService.onAgentTerminate(handleTerminate);
+        return () => { socketService.removeListener('agent_terminate'); };
+    }, [activeAttempt, user?.id, terminateAttempt]);
 
     const loadProctoringModel = async () => {
         try {
@@ -123,21 +160,28 @@ export default function SkillTestPortal({ user }) {
     }, []);
 
     const logProctoring = useCallback(async (eventType, details, severity = 'medium') => {
-        if (!activeAttempt || attemptData?.proctoring_enabled === false) return;
+        if (!activeAttempt || attemptData?.proctoring_enabled === false || terminatedRef.current) return;
         try {
             await axios.post(`${API}/api/skill-tests/proctoring/log`, {
                 attemptId: activeAttempt,
                 testStage: currentView,
                 eventType, details, severity
             });
-            setProctoringStats(prev => ({
-                ...prev,
-                violationCount: prev.violationCount + 1,
-                tabSwitchCount: eventType === 'tab_switch' ? prev.tabSwitchCount + 1 : prev.tabSwitchCount,
-                fullscreenExits: eventType === 'fullscreen_exit' ? prev.fullscreenExits + 1 : prev.fullscreenExits,
-                phoneDetections: eventType === 'phone_detected' ? prev.phoneDetections + 1 : prev.phoneDetections,
-                cameraBlocks: eventType === 'camera_blocked' ? prev.cameraBlocks + 1 : prev.cameraBlocks,
-            }));
+            setProctoringStats(prev => {
+                const next = {
+                    ...prev,
+                    violationCount: prev.violationCount + 1,
+                    tabSwitchCount: eventType === 'tab_switch' ? prev.tabSwitchCount + 1 : prev.tabSwitchCount,
+                    fullscreenExits: eventType === 'fullscreen_exit' ? prev.fullscreenExits + 1 : prev.fullscreenExits,
+                    phoneDetections: eventType === 'phone_detected' ? prev.phoneDetections + 1 : prev.phoneDetections,
+                    cameraBlocks: eventType === 'camera_blocked' ? prev.cameraBlocks + 1 : prev.cameraBlocks,
+                };
+                // Auto-terminate at MAX_VIOLATIONS
+                if (next.violationCount >= MAX_VIOLATIONS && !terminatedRef.current) {
+                    terminateAttempt(`Maximum proctoring violations reached (${next.violationCount}/${MAX_VIOLATIONS}). Your test has been automatically terminated.`);
+                }
+                return next;
+            });
             const warningMessages = {
                 'tab_switch': { title: '⚠️ Tab Switch Detected!', msg: 'Switching tabs is monitored. Return to your test immediately.' },
                 'fullscreen_exit': { title: '⚠️ Fullscreen Exited!', msg: 'You must stay in fullscreen mode. Please re-enter fullscreen.' },
@@ -147,7 +191,7 @@ export default function SkillTestPortal({ user }) {
             const wm = warningMessages[eventType] || { title: '⚠️ Violation!', msg: details };
             showViolationWarning(wm.title, wm.msg, severity);
         } catch { }
-    }, [activeAttempt, currentView, attemptData, showViolationWarning]);
+    }, [activeAttempt, currentView, attemptData, showViolationWarning, terminateAttempt]);
 
     useEffect(() => {
         logProctoringRef.current = logProctoring;
@@ -687,7 +731,7 @@ export default function SkillTestPortal({ user }) {
                                         display: 'flex', alignItems: 'center', gap: '4px',
                                         justifyContent: 'center'
                                     }}>
-                                        <AlertTriangle size={10} /> {proctoringStats.violationCount} Violations
+                                        <AlertTriangle size={10} /> {proctoringStats.violationCount}/{MAX_VIOLATIONS} Violations
                                     </div>
                                 )}
                             </div>
@@ -839,6 +883,56 @@ export default function SkillTestPortal({ user }) {
     // Test List View
     return (
         <div style={{ padding: '24px', maxWidth: '1000px', margin: '0 auto' }}>
+            {/* AGENT TERMINATION OVERLAY */}
+            {agentTerminated && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0, 0, 0, 0.95)', zIndex: 10010,
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    padding: '2rem'
+                }}>
+                    <div style={{
+                        background: 'linear-gradient(145deg, #1e293b, #0f172a)',
+                        border: '2px solid #dc2626',
+                        borderRadius: 20, padding: '3rem', maxWidth: 520, width: '100%',
+                        textAlign: 'center', boxShadow: '0 0 60px rgba(220, 38, 38, 0.3)'
+                    }}>
+                        <div style={{
+                            width: 72, height: 72, borderRadius: '50%',
+                            background: 'linear-gradient(135deg, #dc2626, #991b1b)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            margin: '0 auto 1.5rem'
+                        }}>
+                            <Shield size={36} color="#fff" />
+                        </div>
+                        <h2 style={{ color: '#ef4444', margin: '0 0 0.5rem', fontSize: '1.5rem' }}>
+                            Test Terminated
+                        </h2>
+                        <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.6, margin: '0 0 1.5rem' }}>
+                            {agentTerminateReason}
+                        </p>
+                        <div style={{
+                            background: '#dc262622', border: '1px solid #dc262644',
+                            borderRadius: 10, padding: '0.75rem 1rem', marginBottom: '1.5rem',
+                            fontSize: '0.8rem', color: '#fca5a5'
+                        }}>
+                            This action was taken by the Proctoring Intelligence Agent. Your exam session
+                            has been recorded and flagged for review. Contact your administrator for more information.
+                        </div>
+                        <button
+                            onClick={() => { setAgentTerminated(false); terminatedRef.current = false; setCurrentView('list'); setActiveAttempt(null); setAttemptData(null); loadTests(); }}
+                            style={{
+                                padding: '10px 28px', borderRadius: 10, border: '1px solid #334155',
+                                background: '#1e293b', color: '#e2e8f0', fontSize: '0.9rem',
+                                fontWeight: 600, cursor: 'pointer'
+                            }}
+                        >
+                            Return to Tests
+                        </button>
+                    </div>
+                </div>
+            )}
+
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
                 <div style={{
                     width: '42px', height: '42px', borderRadius: '12px', display: 'flex',
