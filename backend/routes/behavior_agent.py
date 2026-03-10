@@ -16,6 +16,8 @@ from services.behavior_agent import (
     agent_generate_behavior_report,
     get_recent_behavior_analyses,
     get_behavior_dashboard_stats,
+    get_behavior_sessions,
+    clear_behavior_data,
 )
 from database import get_pool
 
@@ -96,6 +98,16 @@ async def generate_behavior_report(req: ReportRequest):
         raise HTTPException(500, detail=f"Report generation failed: {e}")
 
 
+@router.get("/sessions")
+async def list_behavior_sessions(limit: int = Query(50, ge=1, le=200)):
+    """List sessions with behavior events. Admin can select one to analyze."""
+    try:
+        sessions = await get_behavior_sessions(limit)
+        return {"sessions": sessions}
+    except Exception as e:
+        raise HTTPException(500, detail=f"Failed to fetch sessions: {e}")
+
+
 @router.get("/dashboard")
 async def behavior_dashboard():
     """Aggregate stats for the admin behavior analysis dashboard.
@@ -117,6 +129,15 @@ async def list_behavior_analyses(limit: int = Query(50, ge=1, le=200)):
         return {"analyses": analyses, "total": len(analyses)}
     except Exception as e:
         raise HTTPException(500, detail=f"Failed to fetch analyses: {e}")
+
+@router.delete("/clear")
+async def clear_all_behavior_data():
+    """Clear all behavior events and analyses (admin only)."""
+    try:
+        await clear_behavior_data()
+        return {"status": "ok", "message": "All behavior data cleared."}
+    except Exception as e:
+        raise HTTPException(500, detail=f"Failed to clear data: {e}")
 
 
 @router.get("/analysis/{analysis_id}")
