@@ -17,7 +17,7 @@ import {
     Shield, Brain, Activity, AlertTriangle, CheckCircle,
     Eye, Search, FileText, BarChart3, TrendingUp,
     Clock, Keyboard, Code2, MousePointer, AlertCircle, XCircle,
-    ChevronRight, RefreshCw, Zap, Target
+    ChevronRight, RefreshCw, Zap, Target, Trash2
 } from 'lucide-react'
 import axios from 'axios'
 
@@ -139,6 +139,7 @@ export default function BehaviorAnalysisDashboard() {
     // Analyze form
     const [analyzeForm, setAnalyzeForm] = useState({ session_id: '', user_id: '', exam_title: '', problem_difficulty: 'medium' })
     const [analyzeResult, setAnalyzeResult] = useState(null)
+    const [autoRunProgress, setAutoRunProgress] = useState(null)
 
     // Report form
     const [reportForm, setReportForm] = useState({ session_id: '', user_id: '', exam_title: '', candidate_name: '' })
@@ -148,10 +149,36 @@ export default function BehaviorAnalysisDashboard() {
     const [detailId, setDetailId] = useState(null)
     const [detailData, setDetailData] = useState(null)
 
+    // Available sessions (from behavior_events) for admin to select
+    const [sessions, setSessions] = useState([])
+    const [sessionsLoading, setSessionsLoading] = useState(false)
+
     useEffect(() => {
         fetchDashboard()
         fetchAnalyses()
     }, [])
+
+    const fetchSessions = async () => {
+        setSessionsLoading(true)
+        try {
+            const res = await axios.get(`${API_BASE}/behavior/sessions?limit=50`)
+            setSessions(res.data.sessions || [])
+        } catch (err) {
+            console.error('Sessions fetch error:', err)
+        } finally {
+            setSessionsLoading(false)
+        }
+    }
+
+    const selectSession = (s, formKey) => {
+        const setForm = formKey === 'analyze' ? setAnalyzeForm : setReportForm
+        setForm(prev => ({ ...prev, session_id: s.session_id, user_id: s.user_id || prev.user_id }))
+    }
+
+    // Auto-fetch sessions when switching to Analyze or Report tab
+    useEffect(() => {
+        if (tab === 'analyze' || tab === 'report') fetchSessions()
+    }, [tab])
 
     const fetchDashboard = async () => {
         try {
@@ -182,6 +209,62 @@ export default function BehaviorAnalysisDashboard() {
             fetchAnalyses()
         } catch (err) {
             alert('Analysis failed: ' + (err.response?.data?.detail || err.message))
+        } finally {
+            setLoading(false)
+        }
+    }
+
+    const runAllAnalyses = async () => {
+        if (sessions.length === 0) return
+        setLoading(true)
+        setAutoRunProgress({ current: 0, total: sessions.length })
+        let successCount = 0
+        let failCount = 0
+
+        try {
+            for (let i = 0; i < sessions.length; i++) {
+                const s = sessions[i]
+                setAutoRunProgress({ current: i + 1, total: sessions.length, session_id: s.session_id })
+                try {
+                    const payload = {
+                        session_id: s.session_id,
+                        user_id: s.user_id || '',
+                        exam_title: '',
+                        problem_difficulty: 'medium'
+                    }
+                    const res = await axios.post(`${API_BASE}/behavior/analyze`, payload)
+                    if (res.data) {
+                        setAnalyzeResult(res.data)
+                        successCount++
+                    }
+                } catch (e) {
+                    console.error("Failed to analyze session:", s.session_id, e)
+                    failCount++
+                }
+            }
+            alert(`Auto-run complete. Analyzed ${successCount} successfully, ${failCount} failed.`)
+            fetchDashboard()
+            fetchAnalyses()
+        } finally {
+            setLoading(false)
+            setAutoRunProgress(null)
+        }
+    }
+
+    // ── Clear all data ──
+    const clearAllData = async () => {
+        if (!window.confirm("Are you sure you want to clear ALL behavior events and analyses? This cannot be undone.")) return;
+        setLoading(true)
+        try {
+            await axios.delete(`${API_BASE}/behavior/clear`)
+            alert('All behavior data cleared successfully.')
+            fetchDashboard()
+            fetchAnalyses()
+            fetchSessions()
+            setAnalyzeResult(null)
+            setReportResult(null)
+        } catch (err) {
+            alert('Failed to clear data: ' + (err.response?.data?.detail || err.message))
         } finally {
             setLoading(false)
         }
@@ -255,8 +338,35 @@ export default function BehaviorAnalysisDashboard() {
 
             {/* Tab Content */}
             {tab === 'dashboard' && <DashboardTab dashboard={dashboard} analyses={analyses} onViewDetail={viewDetail} onRefresh={() => { fetchDashboard(); fetchAnalyses() }} />}
-            {tab === 'analyze' && <AnalyzeTab form={analyzeForm} setForm={setAnalyzeForm} onRun={runAnalysis} result={analyzeResult} loading={loading} />}
-            {tab === 'report' && <ReportTab form={reportForm} setForm={setReportForm} onGenerate={generateReport} result={reportResult} loading={loading} />}
+            {tab === 'analyze' && (
+                <AnalyzeTab
+                    form={analyzeForm}
+                    setForm={setAnalyzeForm}
+                    onRun={runAnalysis}
+                    onRunAll={runAllAnalyses}
+                    result={analyzeResult}
+                    loading={loading}
+                    autoRunProgress={autoRunProgress}
+                    sessions={sessions}
+                    sessionsLoading={sessionsLoading}
+                    onFetchSessions={fetchSessions}
+                    onSelectSession={(s) => selectSession(s, 'analyze')}
+                    onClearData={clearAllData}
+                />
+            )}
+            {tab === 'report' && (
+                <ReportTab
+                    form={reportForm}
+                    setForm={setReportForm}
+                    onGenerate={generateReport}
+                    result={reportResult}
+                    loading={loading}
+                    sessions={sessions}
+                    sessionsLoading={sessionsLoading}
+                    onFetchSessions={fetchSessions}
+                    onSelectSession={(s) => selectSession(s, 'report')}
+                />
+            )}
 
             {/* Detail modal */}
             {detailId && detailData && (
@@ -398,15 +508,66 @@ function DashboardTab({ dashboard, analyses, onViewDetail, onRefresh }) {
 //  Analyze Session Tab
 // ═══════════════════════════════════════════════════════════════
 
-function AnalyzeTab({ form, setForm, onRun, result, loading }) {
+function AnalyzeTab({ form, setForm, onRun, onRunAll, result, loading, autoRunProgress, sessions, sessionsLoading, onFetchSessions, onSelectSession, onClearData }) {
     return (
         <div>
+            {/* Available sessions - admin can pick one */}
+            <div style={cardStyle}>
+                <h3 style={{ margin: '0 0 12px', fontSize: '0.95rem', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Search size={18} color="#64748b" /> Available Sessions
+                </h3>
+                <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: '#64748b' }}>
+                    Sessions with behavior events. Click one to use its Session ID.
+                </p>
+                <div style={{ display: 'flex', gap: '10px', marginBottom: 12 }}>
+                    <button
+                        onClick={() => { onFetchSessions() }}
+                        disabled={sessionsLoading}
+                        style={{ ...btnStyle, background: '#1e293b', color: '#94a3b8' }}
+                    >
+                        {sessionsLoading ? <RefreshCw size={14} className="spin" /> : <RefreshCw size={14} />} Load Sessions
+                    </button>
+                    <button
+                        onClick={onClearData}
+                        disabled={loading}
+                        style={{ ...btnStyle, background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)' }}
+                    >
+                        <Trash2 size={14} /> Clear All Data
+                    </button>
+                </div>
+                {sessions.length === 0 && !sessionsLoading && (
+                    <p style={{ color: '#64748b', fontSize: '0.85rem', margin: 0 }}>No sessions yet. Students must complete a proctored coding session first.</p>
+                )}
+                {sessions.length > 0 && (
+                    <div style={{ maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {sessions.map((s, i) => (
+                            <div
+                                key={s.session_id || i}
+                                onClick={() => onSelectSession(s)}
+                                style={{
+                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                    padding: '10px 12px', background: form.session_id === s.session_id ? '#334155' : '#1e293b',
+                                    borderRadius: 8, cursor: 'pointer', border: form.session_id === s.session_id ? '1px solid #06b6d4' : '1px solid transparent',
+                                }}
+                            >
+                                <div style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: '#e2e8f0', wordBreak: 'break-all' }}>
+                                    {s.session_id}
+                                </div>
+                                <div style={{ fontSize: '0.75rem', color: '#64748b', flexShrink: 0, marginLeft: 8, whiteSpace: 'nowrap' }}>
+                                    {s.user_id} • {s.event_count} events • {new Date(s.last_event).toLocaleString()}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
             <div style={cardStyle}>
                 <h3 style={{ margin: '0 0 16px', fontSize: '1rem', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: 8 }}>
                     <Brain size={18} color="#06b6d4" /> Analyze Session Behavior
                 </h3>
                 <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-                    <input placeholder="Session ID" value={form.session_id} onChange={e => setForm({ ...form, session_id: e.target.value })} style={inputStyle} />
+                    <input placeholder="Session ID" value={form.session_id} onChange={e => setForm({ ...form, session_id: e.target.value })} style={inputStyle} title="Or select from Available Sessions above" />
                     <input placeholder="User ID (optional)" value={form.user_id} onChange={e => setForm({ ...form, user_id: e.target.value })} style={{ ...inputStyle, flex: 0.7 }} />
                     <input placeholder="Exam Title (optional)" value={form.exam_title} onChange={e => setForm({ ...form, exam_title: e.target.value })} style={{ ...inputStyle, flex: 0.7 }} />
                     <select value={form.problem_difficulty} onChange={e => setForm({ ...form, problem_difficulty: e.target.value })} style={{ ...inputStyle, flex: 0.4 }}>
@@ -415,12 +576,21 @@ function AnalyzeTab({ form, setForm, onRun, result, loading }) {
                         <option value="hard">Hard</option>
                     </select>
                 </div>
-                <button onClick={onRun} disabled={loading || !form.session_id} style={{
-                    ...btnStyle, background: 'linear-gradient(135deg, #06b6d4, #8b5cf6)', color: 'white',
-                    opacity: (loading || !form.session_id) ? 0.5 : 1,
-                }}>
-                    {loading ? <><RefreshCw size={16} className="spin" /> Analyzing...</> : <><Zap size={16} /> Run Behavior Analysis</>}
-                </button>
+                <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+                    <button onClick={onRun} disabled={loading || !form.session_id} style={{
+                        ...btnStyle, background: 'linear-gradient(135deg, #06b6d4, #8b5cf6)', color: 'white',
+                        opacity: (loading || !form.session_id) ? 0.5 : 1, flex: 1, justifyContent: 'center'
+                    }}>
+                        {loading && !autoRunProgress ? <><RefreshCw size={16} className="spin" /> Analyzing...</> : <><Zap size={16} /> Run for Selected Session</>}
+                    </button>
+
+                    <button onClick={onRunAll} disabled={loading || sessions.length === 0} style={{
+                        ...btnStyle, background: 'linear-gradient(135deg, #10b981, #059669)', color: 'white',
+                        opacity: (loading || sessions.length === 0) ? 0.5 : 1, flex: 1, justifyContent: 'center'
+                    }}>
+                        {loading && autoRunProgress ? <><RefreshCw size={16} className="spin" /> Analyzing ({autoRunProgress.current}/{autoRunProgress.total})...</> : <><Target size={16} /> Auto-Run All Available Sessions</>}
+                    </button>
+                </div>
             </div>
 
             {/* Results */}
@@ -551,15 +721,57 @@ function AnalyzeTab({ form, setForm, onRun, result, loading }) {
 //  Report Tab
 // ═══════════════════════════════════════════════════════════════
 
-function ReportTab({ form, setForm, onGenerate, result, loading }) {
+function ReportTab({ form, setForm, onGenerate, result, loading, sessions, sessionsLoading, onFetchSessions, onSelectSession }) {
     return (
         <div>
+            {/* Available sessions */}
+            <div style={cardStyle}>
+                <h3 style={{ margin: '0 0 12px', fontSize: '0.95rem', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Search size={18} color="#64748b" /> Available Sessions
+                </h3>
+                <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: '#64748b' }}>
+                    Click a session to use its Session ID for the report.
+                </p>
+                <button
+                    onClick={() => onFetchSessions()}
+                    disabled={sessionsLoading}
+                    style={{ ...btnStyle, background: '#1e293b', color: '#94a3b8', marginBottom: 12 }}
+                >
+                    {sessionsLoading ? <RefreshCw size={14} className="spin" /> : <RefreshCw size={14} />} Load Sessions
+                </button>
+                {sessions.length === 0 && !sessionsLoading && (
+                    <p style={{ color: '#64748b', fontSize: '0.85rem', margin: 0 }}>No sessions yet. Students must complete a proctored coding session first.</p>
+                )}
+                {sessions.length > 0 && (
+                    <div style={{ maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {sessions.map((s, i) => (
+                            <div
+                                key={s.session_id || i}
+                                onClick={() => onSelectSession(s)}
+                                style={{
+                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                    padding: '10px 12px', background: form.session_id === s.session_id ? '#334155' : '#1e293b',
+                                    borderRadius: 8, cursor: 'pointer', border: form.session_id === s.session_id ? '1px solid #8b5cf6' : '1px solid transparent',
+                                }}
+                            >
+                                <div style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: '#e2e8f0', wordBreak: 'break-all' }}>
+                                    {s.session_id}
+                                </div>
+                                <div style={{ fontSize: '0.75rem', color: '#64748b', flexShrink: 0, marginLeft: 8 }}>
+                                    {s.user_id} • {s.event_count} events
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
             <div style={cardStyle}>
                 <h3 style={{ margin: '0 0 16px', fontSize: '1rem', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: 8 }}>
                     <FileText size={18} color="#8b5cf6" /> Generate Behavior Report
                 </h3>
                 <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-                    <input placeholder="Session ID" value={form.session_id} onChange={e => setForm({ ...form, session_id: e.target.value })} style={inputStyle} />
+                    <input placeholder="Session ID" value={form.session_id} onChange={e => setForm({ ...form, session_id: e.target.value })} style={inputStyle} title="Or select from Available Sessions above" />
                     <input placeholder="User ID" value={form.user_id} onChange={e => setForm({ ...form, user_id: e.target.value })} style={{ ...inputStyle, flex: 0.7 }} />
                     <input placeholder="Candidate Name" value={form.candidate_name} onChange={e => setForm({ ...form, candidate_name: e.target.value })} style={{ ...inputStyle, flex: 0.7 }} />
                     <input placeholder="Exam Title" value={form.exam_title} onChange={e => setForm({ ...form, exam_title: e.target.value })} style={{ ...inputStyle, flex: 0.7 }} />
