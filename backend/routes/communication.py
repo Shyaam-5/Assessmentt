@@ -376,6 +376,33 @@ async def _maybe_trigger_agent(session_id: str, severity: str, user_id: str = ""
                     }, room="admin_room")
                 except Exception:
                     pass
+
+            # AUTO-TERMINATE: If agent recommends termination, notify the student
+            if result.get("recommended_action") == "terminate" or result.get("risk_level") == "terminate":
+                try:
+                    from main import sio
+                    terminate_payload = {
+                        "session_id": session_id,
+                        "reason": "Proctoring Intelligence Agent detected critical integrity violations.",
+                        "fraud_score": result["fraud_score"],
+                        "risk_level": result.get("risk_level"),
+                        "key_findings": result.get("ai_analysis", {}).get("key_findings", []),
+                    }
+                    await sio.emit("agent_terminate", terminate_payload, room=f"session_{session_id}")
+                    if user_id:
+                        await sio.emit("agent_terminate", terminate_payload, room=f"student_{user_id}")
+                    # Also notify admins about the termination
+                    await sio.emit("agent_alert", {
+                        "type": "auto_terminate",
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "fraud_score": result["fraud_score"],
+                        "risk_level": "terminate",
+                        "recommended_action": "terminate",
+                    }, room="admin_room")
+                    print(f"[ProctorAgent] AUTO-TERMINATE sent for session {session_id} (score: {result['fraud_score']})")
+                except Exception as e:
+                    print(f"[ProctorAgent] terminate emit error: {e}")
     except Exception as e:
         print(f"[ProctorAgent] background analysis error: {e}")
 

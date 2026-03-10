@@ -16,7 +16,7 @@ import {
     Shield, AlertTriangle, Eye, FileText, Users, Activity,
     Search, RefreshCw, Brain, Zap, Target, BarChart2,
     ChevronRight, X, Check, Clock, Download, Play,
-    AlertCircle, CheckCircle, XCircle, TrendingUp
+    AlertCircle, CheckCircle, XCircle, TrendingUp, Ban
 } from 'lucide-react'
 import axios from 'axios'
 import socketService from '../services/socketService'
@@ -235,6 +235,21 @@ export default function ProctorAgentDashboard() {
         }
     }
 
+    // ── Terminate a student session ──
+    const terminateSession = async (sessionId, userId, reason) => {
+        if (!confirm(`Terminate session ${sessionId?.slice(0, 16)}?\nThis will immediately end the student's test.`)) return
+        try {
+            await axios.post(`${API_BASE}/proctor-agent/terminate`, {
+                session_id: sessionId,
+                user_id: userId || null,
+                reason: reason || 'Manually terminated by admin via Proctor Agent Dashboard'
+            })
+            alert('Session terminated successfully.')
+        } catch (err) {
+            alert('Terminate failed: ' + (err.response?.data?.detail || err.message))
+        }
+    }
+
     // ── Fetch full analysis detail ──
     const viewAnalysis = async (id) => {
         try {
@@ -302,7 +317,7 @@ export default function ProctorAgentDashboard() {
             {liveAlerts.length > 0 && (
                 <div style={{
                     background: '#1e293b', border: '1px solid #7c2d12', borderRadius: 10,
-                    padding: '10px 14px', marginBottom: 4
+                    padding: '10px 14px', marginBottom: 16
                 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                         <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#f97316', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -319,6 +334,12 @@ export default function ProctorAgentDashboard() {
                             <span style={{ color: '#e2e8f0', fontFamily: 'monospace', fontSize: '0.72rem' }}>{a.session_id?.slice(0, 16)}</span>
                             <span style={{ color: '#94a3b8' }}>Score: <b style={{ color: a.fraud_score >= 60 ? '#ef4444' : '#f59e0b' }}>{a.fraud_score}</b></span>
                             <span style={{ color: '#64748b', fontSize: '0.7rem' }}>{a.recommended_action}</span>
+                            {(a.risk_level === 'terminate' || a.risk_level === 'critical' || a.recommended_action?.toLowerCase().includes('terminate')) && (
+                                <button onClick={() => terminateSession(a.session_id, a.user_id, `Agent alert: ${a.risk_level} risk, score ${a.fraud_score}`)}
+                                    style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '2px 8px', fontSize: '0.68rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
+                                    <Ban size={10} /> Terminate
+                                </button>
+                            )}
                             <span style={{ color: '#475569', fontSize: '0.68rem', marginLeft: 'auto' }}>
                                 {a.receivedAt ? new Date(a.receivedAt).toLocaleTimeString() : ''}
                             </span>
@@ -328,7 +349,7 @@ export default function ProctorAgentDashboard() {
             )}
 
             {/* Tab content */}
-            {tab === 'dashboard' && <DashboardTab dashboard={dashboard} analyses={analyses} onViewAnalysis={viewAnalysis} />}
+            {tab === 'dashboard' && <DashboardTab dashboard={dashboard} analyses={analyses} onViewAnalysis={viewAnalysis} onTerminate={terminateSession} />}
             {tab === 'analyze' && (
                 <AnalyzeTab form={analyzeForm} setForm={setAnalyzeForm} onRun={runAnalysis} result={analyzeResult} loading={loading} />
             )}
@@ -346,7 +367,7 @@ export default function ProctorAgentDashboard() {
 
             {/* Analysis detail modal */}
             {selectedAnalysis && (
-                <AnalysisDetailModal data={selectedAnalysis} onClose={() => setSelectedAnalysis(null)} />
+                <AnalysisDetailModal data={selectedAnalysis} onClose={() => setSelectedAnalysis(null)} onTerminate={terminateSession} />
             )}
 
             {/* Report detail modal */}
@@ -362,10 +383,39 @@ export default function ProctorAgentDashboard() {
 //  Dashboard Tab
 // ═══════════════════════════════════════════════════════════════
 
-function DashboardTab({ dashboard, analyses, onViewAnalysis }) {
-    if (!dashboard) return <p style={{ color: '#64748b', textAlign: 'center', padding: 40 }}>Loading dashboard...</p>
+function DashboardTab({ dashboard, analyses, onViewAnalysis, onTerminate }) {
+    if (!dashboard) return (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}>
+            <div className="loading-spinner" />
+        </div>
+    )
 
     const { total_analyses, average_fraud_score, risk_distribution, recent_flagged } = dashboard
+
+    if (total_analyses === 0) {
+        return (
+            <div style={{ ...cardStyle, textAlign: 'center', padding: '50px 30px' }}>
+                <Shield size={48} color="#3b82f6" style={{ marginBottom: 16, opacity: 0.6 }} />
+                <h3 style={{ color: '#f1f5f9', margin: '0 0 8px' }}>No Analyses Yet</h3>
+                <p style={{ color: '#64748b', fontSize: '0.85rem', margin: '0 0 20px', maxWidth: 480, marginInline: 'auto' }}>
+                    The Proctoring Intelligence Agent hasn't analyzed any sessions yet.
+                    Go to the <strong style={{ color: '#94a3b8' }}>Analyze Session</strong> tab to run your first analysis
+                    on an exam session, or use <strong style={{ color: '#94a3b8' }}>Batch Analysis</strong> to review multiple sessions at once.
+                </p>
+                <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ padding: '10px 16px', borderRadius: 8, background: '#1e293b', fontSize: '0.8rem', color: '#94a3b8' }}>
+                        <Search size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> Analyze individual sessions
+                    </div>
+                    <div style={{ padding: '10px 16px', borderRadius: 8, background: '#1e293b', fontSize: '0.8rem', color: '#94a3b8' }}>
+                        <Users size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> Batch analyze multiple exams
+                    </div>
+                    <div style={{ padding: '10px 16px', borderRadius: 8, background: '#1e293b', fontSize: '0.8rem', color: '#94a3b8' }}>
+                        <FileText size={14} style={{ marginRight: 6, verticalAlign: -2 }} /> Generate integrity reports
+                    </div>
+                </div>
+            </div>
+        )
+    }
 
     return (
         <div>
@@ -419,9 +469,13 @@ function DashboardTab({ dashboard, analyses, onViewAnalysis }) {
                                         <td style={{ padding: '8px 10px', color: '#64748b', fontSize: '0.7rem' }}>
                                             {r.created_at ? new Date(r.created_at).toLocaleString() : '—'}
                                         </td>
-                                        <td style={{ padding: '8px 10px' }}>
+                                        <td style={{ padding: '8px 10px', display: 'flex', gap: 4 }}>
                                             <button onClick={() => onViewAnalysis(r.id)} style={{ ...btnOutline, padding: '4px 10px', fontSize: '0.7rem' }}>
                                                 <Eye size={12} /> View
+                                            </button>
+                                            <button onClick={() => onTerminate(r.session_id, r.user_id, `Flagged session: ${r.risk_level}, score ${r.fraud_score}`)}
+                                                style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: '0.7rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
+                                                <Ban size={12} /> End
                                             </button>
                                         </td>
                                     </tr>
@@ -466,10 +520,16 @@ function DashboardTab({ dashboard, analyses, onViewAnalysis }) {
                                         <td style={{ padding: '8px 10px', color: '#64748b', fontSize: '0.7rem' }}>
                                             {a.created_at ? new Date(a.created_at).toLocaleString() : '—'}
                                         </td>
-                                        <td style={{ padding: '8px 10px' }}>
+                                        <td style={{ padding: '8px 10px', display: 'flex', gap: 4 }}>
                                             <button onClick={() => onViewAnalysis(a.id)} style={{ ...btnOutline, padding: '4px 10px', fontSize: '0.7rem' }}>
                                                 <Eye size={12} /> View
                                             </button>
+                                            {(a.risk_level === 'terminate' || a.risk_level === 'critical') && (
+                                                <button onClick={() => onTerminate(a.session_id, a.user_id, `Analysis #${a.id}: ${a.risk_level}, score ${a.fraud_score}`)}
+                                                    style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: '0.7rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
+                                                    <Ban size={12} /> End
+                                                </button>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}
@@ -854,6 +914,34 @@ function IntegrityReportCard({ data }) {
         { key: 'evidence_log', label: 'Evidence Log', icon: <Eye size={14} />, color: '#64748b' },
     ]
 
+    const downloadReport = () => {
+        const lines = [
+            `EXAM INTEGRITY REPORT`,
+            `${'='.repeat(50)}`,
+            `Generated: ${data.generated_at ? new Date(data.generated_at).toLocaleString() : new Date().toLocaleString()}`,
+            `Session: ${data.session_id || '—'}`,
+            `Candidate: ${data.candidate_name || data.user_id || '—'}`,
+            `Exam: ${data.exam_title || '—'}`,
+            `Fraud Score: ${data.fraud_score}/100`,
+            `Risk Level: ${data.risk_level}`,
+            `Verdict: ${report.overall_verdict || '—'}`,
+            `Confidence: ${report.confidence ? Math.round(report.confidence * 100) + '%' : '—'}`,
+            '',
+        ]
+        sections.forEach(s => {
+            if (report[s.key]) {
+                lines.push(`${s.label.toUpperCase()}`, `${'-'.repeat(40)}`, report[s.key], '')
+            }
+        })
+        const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `integrity-report-${data.session_id || 'unknown'}.txt`
+        a.click()
+        URL.revokeObjectURL(url)
+    }
+
     return (
         <div style={cardStyle}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -861,6 +949,9 @@ function IntegrityReportCard({ data }) {
                     <FileText size={18} color="#10b981" /> Integrity Report
                 </h3>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <button onClick={downloadReport} style={{ ...btnOutline, padding: '5px 12px', fontSize: '0.75rem' }}>
+                        <Download size={12} /> Export
+                    </button>
                     <RiskBadge level={data.risk_level} />
                     <FraudScoreBar score={data.fraud_score} />
                 </div>
@@ -891,7 +982,7 @@ function IntegrityReportCard({ data }) {
 //  Analysis Detail Modal
 // ═══════════════════════════════════════════════════════════════
 
-function AnalysisDetailModal({ data, onClose }) {
+function AnalysisDetailModal({ data, onClose, onTerminate }) {
     const fullResult = data.full_result_json || {}
     return (
         <div style={{
@@ -959,8 +1050,16 @@ function AnalysisDetailModal({ data, onClose }) {
                     </div>
                 )}
 
-                <div style={{ fontSize: '0.7rem', color: '#475569', textAlign: 'right' }}>
-                    Analyzed at: {data.created_at ? new Date(data.created_at).toLocaleString() : '—'}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+                    <div style={{ fontSize: '0.7rem', color: '#475569' }}>
+                        Analyzed at: {data.created_at ? new Date(data.created_at).toLocaleString() : '—'}
+                    </div>
+                    {(data.risk_level === 'terminate' || data.risk_level === 'critical') && onTerminate && (
+                        <button onClick={() => { onTerminate(data.session_id, data.user_id, `Analysis #${data.id}: ${data.risk_level}, score ${data.fraud_score}`); onClose() }}
+                            style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', fontSize: '0.82rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
+                            <Ban size={16} /> Terminate Session
+                        </button>
+                    )}
                 </div>
             </div>
         </div>

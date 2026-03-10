@@ -268,17 +268,6 @@ function DashboardLayout({ children, navItems, title, subtitle, mentorInfo }) {
                             {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
                             <span className="sr-only">{isOnline ? 'Online' : 'Offline'}</span>
                         </div>
-                        {mentorInfo && (
-                            <div className="mentor-badge-nav">
-                                <div className="mentor-avatar-nav" aria-hidden="true">
-                                    {mentorInfo.name.charAt(0).toUpperCase()}
-                                </div>
-                                <div className="mentor-details-nav">
-                                    <span className="mentor-label-nav">{t('my_mentor')}</span>
-                                    <span className="mentor-name-nav">{mentorInfo.name}</span>
-                                </div>
-                            </div>
-                        )}
                     </div>
                 </header>
 

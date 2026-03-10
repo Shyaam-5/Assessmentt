@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import axios from 'axios'
 import { Mic, MicOff, Volume2, BookOpen, MessageSquare, PenTool, BarChart3, Play, Square, RefreshCw, CheckCircle, XCircle, ChevronRight, Award, Target, TrendingUp, Clock, Headphones, ArrowRight, ArrowLeft, HelpCircle, Sparkles, Shield, Camera, CameraOff, AlertTriangle, Eye, Smartphone, Monitor, Users, Ban, Lock } from 'lucide-react'
+import socketService from '../services/socketService'
 
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api/communication'
 const BACKEND_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
@@ -266,6 +267,7 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
 
     // ─── AI Detection: phone/device + people (strict: 400ms, lower thresholds, shorter cooldowns) ───
     const noPersonStreakRef = useRef(0)
+    const multiplePeopleStreakRef = useRef(0)
     useEffect(() => {
         if (!active || !needsAI || !cameraReady || !mediaStream || !modelRef.current) return
         // Use the existing in-DOM video element — offscreen video never reliably produces frames
@@ -275,7 +277,9 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
         const PHONE_COOLDOWN = 4000
         const PEOPLE_COOLDOWN = 5000
         const NO_PERSON_STREAK_THRESHOLD = 5  // 5 consecutive frames (~2s) with no person before violation
+        const MULTI_PEOPLE_STREAK_THRESHOLD = 3  // 3 consecutive frames (~1.2s) before flagging multiple people
         noPersonStreakRef.current = 0
+        multiplePeopleStreakRef.current = 0
 
         // Wait for video to be ready before starting detection
         const startDetection = () => {
@@ -317,22 +321,28 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
                     }
 
                     // Person detection — multiple people AND no-person
-                    const persons = predictions.filter(p => p.class === 'person' && p.score > 0.25)
+                    const persons = predictions.filter(p => p.class === 'person' && p.score > 0.45)
 
-                    // Multiple people detection
+                    // Multiple people detection — streak-based to prevent false positives
                     if (cfg.multiple_people_detect && persons.length > 1) {
-                        const now = Date.now()
-                        if (now - peopleCooldownRef.current > PEOPLE_COOLDOWN) {
-                            peopleCooldownRef.current = now
-                            setMultiplePeople(true)
-                            setMultiplePeopleCount(prev => {
-                                const nc = prev + 1
-                                logViolation('multiple_people', 'critical', `${persons.length} persons detected`)
-                                showWarning('👥 MULTIPLE PEOPLE!', `${persons.length} people detected. Only the candidate must be visible. This is a critical violation.`, 'critical')
-                                return nc
-                            })
-                            setTimeout(() => setMultiplePeople(false), 4000)
+                        multiplePeopleStreakRef.current++
+                        if (multiplePeopleStreakRef.current >= MULTI_PEOPLE_STREAK_THRESHOLD) {
+                            const now = Date.now()
+                            if (now - peopleCooldownRef.current > PEOPLE_COOLDOWN) {
+                                peopleCooldownRef.current = now
+                                setMultiplePeople(true)
+                                setMultiplePeopleCount(prev => {
+                                    const nc = prev + 1
+                                    logViolation('multiple_people', 'critical', `${persons.length} persons detected`)
+                                    showWarning('👥 Multiple People Detected', `${persons.length} people detected in frame. Only the test candidate should be visible.`, 'critical')
+                                    return nc
+                                })
+                                setTimeout(() => setMultiplePeople(false), 4000)
+                            }
+                            multiplePeopleStreakRef.current = 0
                         }
+                    } else {
+                        multiplePeopleStreakRef.current = 0
                     }
 
                     // No-person detection — streak-based to prevent false positives
@@ -370,6 +380,7 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
         return () => {
             if (aiMonitorRef.current) clearInterval(aiMonitorRef.current)
             noPersonStreakRef.current = 0
+            multiplePeopleStreakRef.current = 0
         }
     }, [active, needsAI, cameraReady, mediaStream, modelLoaded, logViolation, showWarning])
 
@@ -474,6 +485,25 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
         }
     }, [active, logViolation, enterFullscreen, showWarning])
 
+    // ── Agent terminate listener — receives real-time kill signal from Proctor Agent ──
+    const [agentTerminateReason, setAgentTerminateReason] = useState(null)
+    useEffect(() => {
+        if (!active) return
+        socketService.connect()
+        socketService.joinStudentSession(userId, sessionId)
+
+        const handleTerminate = (data) => {
+            console.error('[ProctorAgent] TEST TERMINATED BY AGENT:', data)
+            terminatedRef.current = true
+            setAutoTerminated(true)
+            setAgentTerminateReason(data?.reason || 'Your test has been terminated by the Proctoring Intelligence Agent.')
+            if (onAutoTerminateRef.current) onAutoTerminateRef.current()
+            if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+        }
+        socketService.onAgentTerminate(handleTerminate)
+        return () => { socketService.removeListener('agent_terminate') }
+    }, [active, userId, sessionId])
+
     return {
         tabSwitchCount, cameraBlocked, cameraBlockedCount, cameraReady, cameraError,
         isFullscreen, fullscreenExitCount, containerRef,
@@ -483,7 +513,8 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
         multipleMonitors, multipleMonitorCount,
         violationWarning,
         // Strict mode
-        autoTerminated, totalViolations
+        autoTerminated, totalViolations,
+        agentTerminateReason
     }
 }
 
@@ -497,7 +528,7 @@ function ProctoringBar({ proctoring }) {
         modelLoaded, phoneDetected, phoneDetectionCount,
         multiplePeople, multiplePeopleCount,
         multipleMonitors, multipleMonitorCount,
-        violationWarning, autoTerminated, totalViolations } = proctoring
+        violationWarning, autoTerminated, totalViolations, agentTerminateReason } = proctoring
 
     const remaining = MAX_VIOLATIONS - totalViolations
     const dangerZone = remaining <= 3 && remaining > 0
@@ -691,7 +722,7 @@ export default function CommunicationHub({ user }) {
     const isProctoredModule = view === 'test-runner' || (view === 'practice' && activeModule !== 'overview')
     const proctoringConfig = activeTest?.proctoring_config || DEFAULT_PROCTOR_CONFIG
 
-    // Auto-terminate callback — fires when violations >= MAX_VIOLATIONS
+    // Auto-terminate callback — fires when violations >= MAX_VIOLATIONS or agent terminates
     const handleAutoTerminate = useCallback(async () => {
         if (!activeAttempt) return
         setWasAutoTerminated(true)
@@ -700,9 +731,7 @@ export default function CommunicationHub({ user }) {
                 proctoring_violations: MAX_VIOLATIONS,
                 auto_terminated: true,
                 violation_details: {
-                    tab_switches: 0, camera_blocked: 0, fullscreen_exits: 0,
-                    phone_detected: 0, multiple_people: 0, multiple_monitors: 0,
-                    reason: 'Auto-terminated: maximum violations exceeded'
+                    reason: 'Auto-terminated: maximum violations exceeded or agent-initiated termination'
                 }
             })
         } catch {}
@@ -891,8 +920,10 @@ export default function CommunicationHub({ user }) {
                             border: '1px solid rgba(239,68,68,0.2)',
                             marginBottom: '1.5rem', lineHeight: 1.6, color: '#fca5a5', fontSize: '0.9rem'
                         }}>
-                            Your test was automatically terminated due to excessive proctoring violations
-                            ({MAX_VIOLATIONS} violations reached). This has been recorded and will be reviewed by your instructor.
+                            {proctoring.agentTerminateReason
+                                ? proctoring.agentTerminateReason
+                                : `Your test was automatically terminated due to excessive proctoring violations (${MAX_VIOLATIONS} violations reached). This has been recorded and will be reviewed by your instructor.`
+                            }
                         </div>
                     </>
                 ) : (

@@ -50,6 +50,18 @@ class SocketService {
         this.socket.emit('join_monitoring', { userId, role, mentorId });
     }
 
+    // Student joins their session room (to receive agent commands like terminate)
+    joinStudentSession(studentId, sessionId) {
+        if (!this.socket) this.connect();
+        this.socket.emit('join_student_session', { studentId, sessionId });
+    }
+
+    // Listen for agent terminate signal
+    onAgentTerminate(callback) {
+        if (!this.socket) this.connect();
+        this.socket.on('agent_terminate', callback);
+    }
+
     // Student emits submission started
     emitSubmissionStarted(studentId, studentName, problemId, problemTitle, mentorId, isProctored = false) {
         if (!this.socket) this.connect();

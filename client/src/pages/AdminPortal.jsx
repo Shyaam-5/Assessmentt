@@ -145,7 +145,7 @@ function AdminPortal() {
                 { path: '/admin/all-submissions', label: t('all_submissions'), icon: <List size={20} /> },
                 { path: '/admin/skill-submissions', label: 'Skill Submissions', icon: <Brain size={20} /> },
                 { path: '/admin/live-monitoring', label: t('live_monitoring'), icon: <Activity size={20} /> },
-                { path: '/admin/proctor-agent', label: 'Proctor Agent', icon: <Brain size={20} /> },
+                { path: '/admin/proctor-agent', label: 'Proctoring Agent', icon: <Shield size={20} /> },
                 { path: '/admin/behavior-analysis', label: 'Behavior Analysis', icon: <Shield size={20} /> },
                 { path: '/admin/analytics', label: t('analytics'), icon: <TrendingUp size={20} /> }
             ]

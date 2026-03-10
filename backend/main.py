@@ -43,6 +43,18 @@ async def join_monitoring(sid, data):
 
 
 @sio.event
+async def join_student_session(sid, data):
+    """Student joins their personal room for receiving agent commands (e.g. terminate)."""
+    student_id = data.get("studentId")
+    session_id = data.get("sessionId")
+    if student_id:
+        await sio.enter_room(sid, f"student_{student_id}")
+    if session_id:
+        await sio.enter_room(sid, f"session_{session_id}")
+    print(f"[Socket] Student {student_id} joined session room {session_id}")
+
+
+@sio.event
 async def submission_started(sid, data):
     mentor_id = data.get("mentorId")
     await sio.emit("live_update", {**data, "type": "submission_started"}, room="admin_room")
@@ -108,6 +120,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_corp_header(request, call_next):
+    response = await call_next(request)
+    response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+    return response
+
 # ─── Register routes ────────────────────────────────────────────
 
 from routes.auth import router as auth_router
@@ -127,6 +145,7 @@ from routes.admin import router as admin_router
 from routes.communication import router as comm_router
 from routes.proctor_agent import router as proctor_agent_router
 from routes.behavior_agent import router as behavior_agent_router
+from routes.ai import router as ai_router
 
 app.include_router(auth_router)
 app.include_router(tasks_router)
@@ -145,6 +164,7 @@ app.include_router(admin_router)
 app.include_router(comm_router)
 app.include_router(proctor_agent_router)
 app.include_router(behavior_agent_router)
+app.include_router(ai_router)
 
 
 # ─── Health check ────────────────────────────────────────────────

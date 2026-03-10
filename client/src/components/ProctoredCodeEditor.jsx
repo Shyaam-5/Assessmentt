@@ -87,6 +87,16 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
     const proctoring = problem.proctoring || {}
     const maxTabSwitches = proctoring.maxTabSwitches || 3
 
+    // Agent termination state
+    const [agentTerminated, setAgentTerminated] = useState(false)
+    const [terminateReason, setTerminateReason] = useState('')
+
+    // ── Unified violation counter for hard 10/10 auto-terminate ──
+    const MAX_VIOLATIONS = 10
+    const totalViolationsRef = useRef(0)
+    const terminatedRef = useRef(false)
+    const [totalViolations, setTotalViolations] = useState(0)
+
     // ============ BEHAVIOR TRACKING ============
     const behaviorSessionId = useRef(`beh_${user.id}_${problem.id}_${Date.now()}`)
     const behaviorEventsBuffer = useRef([])
@@ -213,6 +223,61 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         }
     }, [proctoring.enabled]) // eslint-disable-line react-hooks/exhaustive-deps
 
+    // ── Auto-submit and terminate the test (shared by 10/10 and agent paths) ──
+    const autoTerminateTest = useCallback(async (reason) => {
+        if (terminatedRef.current) return
+        terminatedRef.current = true
+        setAgentTerminated(true)
+        setIsDisqualified(true)
+        setTerminateReason(reason)
+        setShowWarning(true)
+        setWarningMessage('🛑 Test terminated — submitting your work')
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+        // Auto-submit whatever code is written to finalize server-side
+        try {
+            await axios.post(`${API_BASE}/submissions/proctored`, {
+                studentId: user.id,
+                problemId: problem.id,
+                code: code || '// Terminated',
+                language: selectedLanguage,
+                submissionType: 'auto_terminated',
+                tabSwitches,
+                copyPasteAttempts,
+                cameraBlockedCount,
+                phoneDetectionCount: phoneDetectionCount,
+                fullscreenExitCount,
+                faceNotDetectedCount,
+                multipleFacesDetectionCount,
+                faceLookawayCount,
+                timeSpent: Math.round((Date.now() - startTime) / 1000),
+                proctored: true
+            })
+        } catch (err) {
+            console.error('Auto-terminate submission failed:', err)
+        }
+    }, [user.id, problem.id, code, selectedLanguage, tabSwitches, copyPasteAttempts,
+        cameraBlockedCount, phoneDetectionCount, fullscreenExitCount,
+        faceNotDetectedCount, multipleFacesDetectionCount, faceLookawayCount, startTime])
+
+    // ── Record a proctoring violation and auto-terminate at MAX_VIOLATIONS ──
+    const recordViolation = useCallback((eventType = 'unknown', severity = 'low') => {
+        if (terminatedRef.current) return
+        totalViolationsRef.current += 1
+        const count = totalViolationsRef.current
+        setTotalViolations(count)
+        // Log to backend for Proctor Intelligence Agent analysis
+        axios.post(`${API_BASE}/proctoring/log`, {
+            userId: user.id,
+            sessionId: behaviorSessionId.current,
+            eventType,
+            severity,
+            details: `Violation ${count}/${MAX_VIOLATIONS}`
+        }).catch(() => {})
+        if (count >= MAX_VIOLATIONS) {
+            autoTerminateTest(`Maximum proctoring violations reached (${count}/${MAX_VIOLATIONS}). Your test has been automatically terminated and submitted.`)
+        }
+    }, [autoTerminateTest, user.id])
+
     // Request fullscreen on mount
     useEffect(() => {
         const requestFullscreen = () => {
@@ -242,6 +307,23 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         }
     }, [])
 
+    // ── Agent terminate listener — receives real-time kill signal from Proctor Agent ──
+    useEffect(() => {
+        if (!proctoring.enabled) return
+        socketService.connect()
+        socketService.joinStudentSession(user.id, behaviorSessionId.current)
+
+        const handleTerminate = (data) => {
+            console.error('[ProctorAgent] TEST TERMINATED BY AGENT:', data)
+            autoTerminateTest(data?.reason || 'Your test has been terminated by the Proctoring Intelligence Agent due to integrity violations.')
+        }
+
+        socketService.onAgentTerminate(handleTerminate)
+        return () => {
+            socketService.removeListener('agent_terminate')
+        }
+    }, [proctoring.enabled, user.id])
+
     // Fullscreen exit detection — warn, record violation, BLOCK the editor
     useEffect(() => {
         const handleFullscreenChange = () => {
@@ -261,6 +343,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                         newCount >= 3 ? 'critical' : 'warning',
                         problem.mentorId
                     )
+                    recordViolation('fullscreen_exit', newCount >= 3 ? 'critical' : 'warning')
 
                     return newCount
                 })
@@ -497,6 +580,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                     'critical',
                     problem.mentorId
                 )
+                recordViolation('camera_blocked', 'critical')
 
                 setWarningMessage(`🚫 Camera obstruction detected! (${newCount} times) Please uncover your camera.`)
                 setShowWarning(true)
@@ -569,6 +653,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                         newCount > 2 ? 'critical' : 'warning',
                         problem.mentorId
                     )
+                    recordViolation('phone_detected', newCount > 2 ? 'critical' : 'warning')
 
                     setWarningMessage(`📱 Mobile phone detected! (${newCount} times) Remove all electronic devices from view.`)
                     setShowWarning(true)
@@ -654,6 +739,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                             'warning',
                             problem.mentorId
                         )
+                        recordViolation('face_not_detected', 'warning')
                         return prev + 1
                     })
                     setWarningMessage('👤 Face not detected! Please ensure your face is visible.')
@@ -677,6 +763,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                             'warning',
                             problem.mentorId
                         )
+                        recordViolation('face_lookaway', 'warning')
                         return prev + 1
                     })
                 }
@@ -694,6 +781,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                             'critical',
                             problem.mentorId
                         )
+                        recordViolation('multiple_faces', 'critical')
                         return prev + 1
                     })
                     setWarningMessage(`👥 Multiple people detected! (${predictions.length} faces) - Automatic violation!`)
@@ -746,6 +834,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                 newCount >= 2 ? 'critical' : 'warning',
                 problem.mentorId
             )
+            recordViolation('multiple_monitors', newCount >= 2 ? 'critical' : 'warning')
 
             setWarningMessage(`🖥️ Multiple monitors detected! (${newCount} times) Please disconnect external displays.`)
             setShowWarning(true)
@@ -870,6 +959,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                         newCount >= maxTabSwitches ? 'critical' : 'warning',
                         problem.mentorId
                     )
+                    recordViolation('window_switch', newCount >= maxTabSwitches ? 'critical' : 'warning')
 
                     if (newCount >= maxTabSwitches) {
                         setWarningMessage(`🚫 Maximum tab switches reached (${newCount}/${maxTabSwitches}). This will be reported.`)
@@ -913,6 +1003,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                         'warning',
                         problem.mentorId
                     )
+                    recordViolation('copy_attempt', 'warning')
                     return prev + 1
                 })
                 setWarningMessage('🚫 Copy/Paste is disabled for this problem!')
@@ -1151,8 +1242,59 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
 
     return (
         <div ref={containerRef} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: '#0f172a', zIndex: 10000, display: 'flex', flexDirection: 'column' }}>
+
+            {/* AGENT TERMINATION OVERLAY — Hard block, cannot be dismissed */}
+            {agentTerminated && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0, 0, 0, 0.95)', zIndex: 10010,
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    padding: '2rem'
+                }}>
+                    <div style={{
+                        background: 'linear-gradient(145deg, #1e293b, #0f172a)',
+                        border: '2px solid #dc2626',
+                        borderRadius: 20, padding: '3rem', maxWidth: 520, width: '100%',
+                        textAlign: 'center', boxShadow: '0 0 60px rgba(220, 38, 38, 0.3)'
+                    }}>
+                        <div style={{
+                            width: 72, height: 72, borderRadius: '50%',
+                            background: 'linear-gradient(135deg, #dc2626, #991b1b)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            margin: '0 auto 1.5rem'
+                        }}>
+                            <Shield size={36} color="#fff" />
+                        </div>
+                        <h2 style={{ color: '#ef4444', margin: '0 0 0.5rem', fontSize: '1.5rem' }}>
+                            Test Terminated
+                        </h2>
+                        <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: 1.6, margin: '0 0 1.5rem' }}>
+                            {terminateReason}
+                        </p>
+                        <div style={{
+                            background: '#dc262622', border: '1px solid #dc262644',
+                            borderRadius: 10, padding: '0.75rem 1rem', marginBottom: '1.5rem',
+                            fontSize: '0.8rem', color: '#fca5a5'
+                        }}>
+                            This action was taken by the Proctoring Intelligence Agent. Your exam session
+                            has been recorded and flagged for review. Contact your administrator for more information.
+                        </div>
+                        <button
+                            onClick={onClose}
+                            style={{
+                                padding: '10px 28px', borderRadius: 10, border: '1px solid #334155',
+                                background: '#1e293b', color: '#e2e8f0', fontSize: '0.9rem',
+                                fontWeight: 600, cursor: 'pointer'
+                            }}
+                        >
+                            Close
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* Warning Toast */}
-            {showWarning && (
+            {showWarning && !agentTerminated && (
                 <div style={{ position: 'fixed', top: '1rem', left: '50%', transform: 'translateX(-50%)', background: isDisqualified ? 'linear-gradient(135deg, #ef4444, #dc2626)' : 'linear-gradient(135deg, #f59e0b, #d97706)', color: 'white', padding: '1rem 2rem', borderRadius: '0.75rem', zIndex: 10002, boxShadow: '0 10px 40px rgba(239, 68, 68, 0.5)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                     <AlertTriangle size={24} />
                     <span style={{ fontWeight: 600 }}>{warningMessage}</span>
@@ -1160,7 +1302,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
             )}
 
             {/* BLOCKING OVERLAY — Prevents all interaction when fullscreen is exited or multiple monitors detected */}
-            {(!isFullscreen || multipleMonitors) && !isDisqualified && (
+            {(!isFullscreen || multipleMonitors) && !agentTerminated && (
                 <div style={{
                     position: 'fixed',
                     top: 0, left: 0, right: 0, bottom: 0,
@@ -1265,6 +1407,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
                             {multipleFacesDetectionCount > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>👥 {multipleFacesDetectionCount} multi-face</span>}
                             {faceLookawayCount > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>👀 {faceLookawayCount} lookaway</span>}
                             {multipleMonitorCount > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', fontWeight: 600 }}>🖥️ {multipleMonitorCount} multi-monitor</span>}
+                            {totalViolations > 0 && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '4px', background: totalViolations >= 7 ? 'rgba(239, 68, 68, 0.4)' : 'rgba(245, 158, 11, 0.2)', color: totalViolations >= 7 ? '#fca5a5' : '#fbbf24', fontWeight: 700 }}>🛡️ {totalViolations}/{MAX_VIOLATIONS}</span>}
                         </div>
                     </div>
                 </div>

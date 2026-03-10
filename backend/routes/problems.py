@@ -26,9 +26,9 @@ class ProblemCreate(BaseModel):
     sqlSchema: str | None = None
     expectedQueryResult: str | None = None
     # Proctoring
-    enableCamera: bool | None = False
     enableProctoring: bool | None = False
-    enableAIProctoring: bool | None = False
+    enableVideoAudio: bool | None = False
+    disableCopyPaste: bool | None = False
     trackTabSwitches: bool | None = False
     maxTabSwitches: int | None = 3
     enableFaceDetection: bool | None = False
@@ -50,13 +50,12 @@ def _enrich_problem(p: dict) -> dict:
     p["proctoring"] = {
         "enabled": enable_proc,
         "videoAudio": p.pop("enable_video_audio", None) == "true",
-        "enableAIProctoring": p.pop("enable_ai_proctoring", None) == "true",
+        "disableCopyPaste": p.pop("disable_copy_paste", None) == "true",
         "trackTabSwitches": p.pop("track_tab_switches", None) == "true",
         "maxTabSwitches": int(p.pop("max_tab_switches", 3) or 3),
         "enableFaceDetection": p.pop("enable_face_detection", None) == "true",
         "detectMultipleFaces": p.pop("detect_multiple_faces", None) == "true",
         "trackFaceLookaway": p.pop("track_face_lookaway", None) == "true",
-        "disableCopyPaste": enable_proc,  # Default to true if proctoring is enabled
     }
     return p
 
@@ -156,7 +155,7 @@ async def create_problem(body: ProblemCreate):
                     id, mentor_id, title, description, sample_input, expected_output,
                     difficulty, type, language, status, deadline,
                     sql_schema, expected_query_result,
-                    enable_camera, enable_proctoring, enable_ai_proctoring,
+                    enable_proctoring, enable_video_audio, disable_copy_paste,
                     track_tab_switches, max_tab_switches,
                     enable_face_detection, detect_multiple_faces, track_face_lookaway,
                     created_at
@@ -166,8 +165,9 @@ async def create_problem(body: ProblemCreate):
                     body.sampleInput, body.expectedOutput,
                     body.difficulty, body.type, body.language, body.status, body.deadline,
                     body.sqlSchema, body.expectedQueryResult,
-                    str(body.enableCamera).lower(), str(body.enableProctoring).lower(),
-                    str(body.enableAIProctoring).lower(),
+                    str(body.enableProctoring).lower(),
+                    str(body.enableVideoAudio).lower(),
+                    str(body.disableCopyPaste).lower(),
                     str(body.trackTabSwitches).lower(), body.maxTabSwitches,
                     str(body.enableFaceDetection).lower(),
                     str(body.detectMultipleFaces).lower(),

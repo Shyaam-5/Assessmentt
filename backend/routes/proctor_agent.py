@@ -121,6 +121,46 @@ async def detect_collusion(req: CollusionRequest):
         raise HTTPException(status_code=500, detail=f"Collusion detection failed: {str(e)}")
 
 
+class TerminateRequest(BaseModel):
+    session_id: str
+    user_id: str = ""
+    reason: str = "Manually terminated by admin via Proctoring Intelligence Agent."
+
+
+@router.post("/terminate")
+async def terminate_session(req: TerminateRequest):
+    """Admin manually terminates a student's test session via the Proctoring Agent.
+
+    Sends a real-time socket event to the student, forcing their test to end.
+    """
+    try:
+        from main import sio
+        terminate_payload = {
+            "session_id": req.session_id,
+            "reason": req.reason,
+            "fraud_score": None,
+            "risk_level": "terminate",
+            "key_findings": ["Manually terminated by administrator."],
+            "manual": True,
+        }
+        # Emit to both session room and student room for maximum coverage
+        await sio.emit("agent_terminate", terminate_payload, room=f"session_{req.session_id}")
+        if req.user_id:
+            await sio.emit("agent_terminate", terminate_payload, room=f"student_{req.user_id}")
+        # Notify other admins
+        await sio.emit("agent_alert", {
+            "type": "manual_terminate",
+            "session_id": req.session_id,
+            "user_id": req.user_id,
+            "risk_level": "terminate",
+            "recommended_action": "terminate",
+            "reason": req.reason,
+        }, room="admin_room")
+        return {"success": True, "message": f"Terminate signal sent for session {req.session_id}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Terminate failed: {str(e)}")
+
+
 @router.get("/analyses")
 async def list_analyses(limit: int = Query(50, ge=1, le=200)):
     """List recent agent analyses for the admin dashboard."""

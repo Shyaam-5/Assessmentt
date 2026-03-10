@@ -53,6 +53,12 @@ EVENT_RISK = {
     "copy_paste":           6,
     "devtools_attempt":     10,
     "multiple_monitors":    7,
+    # Aliases for frontend event names
+    "face_not_detected":    6,
+    "multiple_faces":       9,
+    "face_lookaway":        5,
+    "window_switch":        4,
+    "copy_attempt":         6,
     # Camera status
     "camera_started":       0,
 }
@@ -61,14 +67,14 @@ EVENT_RISK = {
 COMPOUND_PATTERNS = {
     "external_source_copy": {
         "description": "Tab switch followed by content paste — likely copying from external source",
-        "events": ["tab_switch", "copy_paste"],
+        "events": ["tab_switch", "window_switch", "copy_paste", "copy_attempt"],
         "window_seconds": 10,
         "severity": "critical",
         "confidence": 0.85,
     },
     "impersonation": {
         "description": "No person detected while activity continues — possible remote access or impersonation",
-        "events": ["no_person"],
+        "events": ["no_person", "face_not_detected"],
         "min_count": 3,
         "window_seconds": 120,
         "severity": "critical",
@@ -84,7 +90,7 @@ COMPOUND_PATTERNS = {
     },
     "assisted_test": {
         "description": "Multiple people detected with camera blocks — someone else may be assisting",
-        "events": ["multiple_people", "camera_blocked"],
+        "events": ["multiple_people", "multiple_faces", "camera_blocked"],
         "window_seconds": 180,
         "severity": "critical",
         "confidence": 0.75,
@@ -98,7 +104,7 @@ COMPOUND_PATTERNS = {
     },
     "multi_monitor_leak": {
         "description": "External display detected — exam content may be visible to others or reference material in use",
-        "events": ["multiple_monitors", "tab_switch"],
+        "events": ["multiple_monitors", "tab_switch", "window_switch"],
         "window_seconds": 60,
         "severity": "high",
         "confidence": 0.70,
@@ -117,7 +123,7 @@ COMPOUND_PATTERNS = {
 THRESHOLD_WARN = 15
 THRESHOLD_FLAG = 35
 THRESHOLD_CRITICAL = 60
-THRESHOLD_TERMINATE = 80
+THRESHOLD_TERMINATE = 65
 
 # ═══════════════════════════════════════════════════════════════
 #  Tools — standalone functions the agent can call
@@ -125,6 +131,8 @@ THRESHOLD_TERMINATE = 80
 
 async def tool_get_event_timeline(session_id: str, source: str = "comm") -> list[dict]:
     """Fetch all proctoring events for a session, ordered by time."""
+    if source not in ("comm", "skill"):
+        raise ValueError(f"Invalid source: {source}. Must be 'comm' or 'skill'.")
     table = "comm_proctoring_logs" if source == "comm" else "skill_proctoring_logs"
     id_col = "session_id" if source == "comm" else "attempt_id"
 
@@ -262,7 +270,7 @@ def tool_calculate_fraud_score(events: list[dict], patterns: list[dict]) -> dict
         sv = e.get("severity", "low")
         risk = EVENT_RISK.get(et, 2)
         weight = SEVERITY_WEIGHTS.get(sv, 1)
-        event_score += risk * weight * 0.15  # Scale factor
+        event_score += risk * weight * 0.25  # Scale factor
 
     # 2. Pattern-based score
     pattern_score = 0.0
@@ -333,8 +341,9 @@ Available tools:
 
 IMPORTANT CONTEXT:
 - This is a HIGH-STAKES proctored exam (university exam or HR hiring assessment)
-- False positives harm honest candidates. Be certain before recommending termination.
-- But also: fraud undermines exam integrity for ALL candidates. Don't be too lenient.
+- Fraud undermines exam integrity for ALL candidates — act decisively when evidence is clear.
+- For clear patterns (repeated phone detections, camera blocks, multiple people), recommend termination.
+- A single accidental tab switch or brief camera glitch can be forgiven, but repeated violations cannot.
 
 When analyzing, consider:
 - Are events isolated incidents or a coordinated pattern?
