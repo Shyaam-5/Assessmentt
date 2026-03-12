@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { AlertTriangle, Activity, CheckCircle, Clock, X } from 'lucide-react'
 import socketService from '../services/socketService'
-import './LiveMonitoring.css'
 
 function MentorLiveMonitoring({ user }) {
     const [liveUpdates, setLiveUpdates] = useState([])

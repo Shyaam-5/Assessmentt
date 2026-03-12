@@ -122,6 +122,31 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
     const faceMissingCountRef = useRef(0)
     const cameraBlockedRef = useRef(false)
 
+    // ── Unified Violation Counter ──
+    const MAX_VIOLATIONS = 10
+    const totalViolationsRef = useRef(0)
+    const terminatedRef = useRef(false)
+    const [totalViolations, setTotalViolations] = useState(0)
+    const [agentTerminated, setAgentTerminated] = useState(false)
+    const [terminateReason, setTerminateReason] = useState('')
+
+    // ── Multiple Monitor Detection ──
+    const [multipleMonitors, setMultipleMonitors] = useState(false)
+    const [multipleMonitorCount, setMultipleMonitorCount] = useState(0)
+    const monitorCheckIntervalRef = useRef(null)
+
+    // ── Behavior Agent Tracking ──
+    const behaviorSessionId = useRef(`beh_${user.id}_${test.id}_${Date.now()}`)
+    const behaviorEventsBuffer = useRef([])
+    const lastKeystrokeTime = useRef(Date.now())
+    const codeSnapshotInterval = useRef(null)
+    const behaviorSendInterval = useRef(null)
+    const lastCodeSnapshot = useRef('')
+    const idleTimerRef = useRef(null)
+    const BEHAVIOR_SEND_INTERVAL_MS = 15000
+    const CODE_SNAPSHOT_INTERVAL_MS = 30000
+    const IDLE_DETECT_MS = 30000
+
     const sectionsWithQuestions = useMemo(() => {
         const bySection = test.questionsBySection || {}
         return ['aptitude', 'verbal', 'logical', 'coding', 'sql'].filter(s => (bySection[s] && bySection[s].length) > 0)
@@ -146,6 +171,85 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
     useEffect(() => { answersRef.current = answers }, [answers])
     useEffect(() => { tabSwitchesRef.current = tabSwitches }, [tabSwitches])
     useEffect(() => { timeLeftRef.current = timeLeft }, [timeLeft])
+
+    // ── Auto-terminate test (used by unified counter + agent) ──
+    const autoTerminateTest = useCallback(async (reason) => {
+        if (terminatedRef.current) return
+        terminatedRef.current = true
+        submittedRef.current = true
+        setAgentTerminated(true)
+        setTerminateReason(reason)
+        setShowWarning(true)
+        setWarningMessage('🛑 Test terminated — submitting your work')
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+        if (mediaStream) mediaStream.getTracks().forEach(t => t.stop())
+        if (cameraCheckIntervalRef.current) clearInterval(cameraCheckIntervalRef.current)
+        if (phoneCheckIntervalRef.current) clearInterval(phoneCheckIntervalRef.current)
+        if (monitorCheckIntervalRef.current) clearInterval(monitorCheckIntervalRef.current)
+        try {
+            const timeSpent = (test.duration || 120) * 60 - timeLeftRef.current
+            socketService.emitSubmissionCompleted(user.id, user.name || user.email, test.id, test.title, null, 'terminated', 0)
+            const res = await axios.post(`${API_BASE}/global-tests/${test.id}/submit`, {
+                studentId: user.id,
+                answers: answersRef.current,
+                selectedLanguages: {},
+                timeSpent,
+                tabSwitches: tabSwitchesRef.current,
+                copyPasteAttempts: copyPasteAttemptsRef.current,
+                cameraBlockedCount: cameraBlockedCountRef.current,
+                phoneDetectionCount: phoneDetectionCountRef.current,
+                faceMissingCount: faceMissingCountRef.current,
+                proctoringEnabled: true,
+                submissionType: 'auto_terminated',
+                terminationReason: reason
+            })
+            const submissionResult = res.data.submission || res.data
+            setTimeout(() => { onClose(); onComplete && onComplete(submissionResult) }, 3000)
+        } catch (err) {
+            console.error('Auto-terminate submission failed:', err)
+            setTimeout(() => { onClose() }, 3000)
+        }
+    }, [user, test, mediaStream, onClose, onComplete])
+
+    // ── Unified violation recorder (logs to backend + checks threshold) ──
+    const recordViolation = useCallback((eventType = 'unknown', severity = 'low') => {
+        if (terminatedRef.current) return
+        totalViolationsRef.current += 1
+        const count = totalViolationsRef.current
+        setTotalViolations(count)
+        axios.post(`${API_BASE}/proctoring/log`, {
+            userId: user.id,
+            sessionId: behaviorSessionId.current,
+            eventType,
+            severity,
+            details: `Violation ${count}/${MAX_VIOLATIONS}`
+        }).catch(() => {})
+        if (count >= MAX_VIOLATIONS) {
+            autoTerminateTest(`Maximum proctoring violations reached (${count}/${MAX_VIOLATIONS}). Your test has been automatically terminated.`)
+        }
+    }, [autoTerminateTest, user.id])
+
+    // ── Behavior Agent: push event, flush to backend ──
+    const pushBehaviorEvent = useCallback((type, data = {}) => {
+        behaviorEventsBuffer.current.push({ type, timestamp: new Date().toISOString(), ...data })
+    }, [])
+
+    const flushBehaviorEvents = useCallback(async () => {
+        if (behaviorEventsBuffer.current.length === 0) return
+        const events = [...behaviorEventsBuffer.current]
+        behaviorEventsBuffer.current = []
+        try {
+            await axios.post(`${API_BASE}/behavior/log-events`, {
+                session_id: behaviorSessionId.current,
+                user_id: user.id,
+                events,
+            })
+        } catch {
+            if (behaviorEventsBuffer.current.length < 500) {
+                behaviorEventsBuffer.current = [...events, ...behaviorEventsBuffer.current]
+            }
+        }
+    }, [user.id])
 
     // Handle fullscreen - runs once on mount, cleaned up on unmount
     // Uses submittedRef (synchronous) instead of state to avoid stale closures
@@ -218,17 +322,17 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
     const maxTabSwitches = test.maxTabSwitches ?? 3
     useEffect(() => {
         const handleVisibility = () => {
-            if (document.hidden && !result) {
+            if (document.hidden && !result && !terminatedRef.current) {
                 setTabSwitches(prev => {
                     const next = prev + 1
-                    // Emit proctoring violation to server for admin monitoring
                     socketService.emitProctoringViolation(
                         user.id,
                         user.name || user.email,
                         'window_switch',
                         next >= maxTabSwitches ? 'critical' : 'warning',
-                        null // mentorId for global test
+                        null
                     )
+                    recordViolation('window_switch', next >= maxTabSwitches ? 'critical' : 'warning')
                     if (next >= maxTabSwitches) {
                         setWarningMessage(`Disqualified: max tab switches (${next}) exceeded.`)
                         setShowWarning(true)
@@ -242,15 +346,32 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
                 })
             }
         }
+        // Window blur detection (catches focus loss not caught by visibilitychange)
+        const handleBlur = () => {
+            if (!document.hidden && !result && !terminatedRef.current) {
+                recordViolation('window_blur', 'medium')
+                pushBehaviorEvent('blur')
+            }
+        }
         document.addEventListener('visibilitychange', handleVisibility)
-        return () => document.removeEventListener('visibilitychange', handleVisibility)
-    }, [result, maxTabSwitches])
+        window.addEventListener('blur', handleBlur)
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibility)
+            window.removeEventListener('blur', handleBlur)
+        }
+    }, [result, maxTabSwitches, recordViolation, pushBehaviorEvent])
 
     // Function to initialize camera - called when user clicks "Allow Camera"
     const initializeCamera = async () => {
         try {
+            // Pick the first local webcam to avoid Windows phone-camera picker
+            const devices = await navigator.mediaDevices.enumerateDevices()
+            const webcam = devices.find(d => d.kind === 'videoinput' && d.deviceId)
+            const videoConstraints = webcam?.deviceId
+                ? { deviceId: { exact: webcam.deviceId }, width: 320, height: 240 }
+                : { facingMode: 'user', width: 320, height: 240 }
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'user', width: 320, height: 240 },
+                video: videoConstraints,
                 audio: true
             })
             setMediaStream(stream)
@@ -332,8 +453,9 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
                             user.name || user.email,
                             'phone_detected',
                             next >= 3 ? 'critical' : 'warning',
-                            null // mentorId for global test
+                            null
                         )
+                        recordViolation('phone_detected', next >= 3 ? 'critical' : 'warning')
                         return next
                     })
                 } else {
@@ -354,8 +476,9 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
                             user.name || user.email,
                             'face_not_detected',
                             next >= 9 ? 'critical' : 'warning',
-                            null // mentorId for global test
+                            null
                         )
+                        recordViolation('face_not_detected', next >= 9 ? 'critical' : 'warning')
                     }
                     return next
                 })
@@ -410,8 +533,9 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
                     user.name || user.email,
                     'camera_blocked',
                     next >= 3 ? 'critical' : 'warning',
-                    null // mentorId for global test
+                    null
                 )
+                recordViolation('camera_blocked', next >= 3 ? 'critical' : 'warning')
                 return next
             })
         } else if (!isBlocked && cameraBlockedRef.current) {
@@ -437,8 +561,9 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
                     user.name || user.email,
                     'copy_attempt',
                     next >= 5 ? 'critical' : 'warning',
-                    null // mentorId for global test
+                    null
                 )
+                recordViolation('copy_attempt', next >= 5 ? 'critical' : 'warning')
                 return next
             })
         }
@@ -456,8 +581,9 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
                     user.name || user.email,
                     'paste_attempt',
                     next >= 5 ? 'critical' : 'warning',
-                    null // mentorId for global test
+                    null
                 )
+                recordViolation('paste_attempt', next >= 5 ? 'critical' : 'warning')
                 return next
             })
         }
@@ -476,6 +602,123 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
     useEffect(() => { phoneDetectionCountRef.current = phoneDetectionCount }, [phoneDetectionCount])
     useEffect(() => { copyPasteAttemptsRef.current = copyPasteAttempts }, [copyPasteAttempts])
     useEffect(() => { faceMissingCountRef.current = faceMissingCount }, [faceMissingCount])
+
+    // ── DevTools Blocking ──
+    useEffect(() => {
+        if (!proctoring.enabled) return
+        const preventKeys = (e) => {
+            if (e.key === 'F12' ||
+                (e.ctrlKey && e.shiftKey && ['I','i','J','j','C','c'].includes(e.key)) ||
+                (e.ctrlKey && ['u','U'].includes(e.key)) ||
+                e.key === 'PrintScreen') {
+                e.preventDefault()
+                e.stopPropagation()
+                recordViolation('devtools_attempt', 'high')
+                socketService.emitProctoringViolation(user.id, user.name || user.email, 'devtools_attempt', 'high', null)
+                setWarningMessage('🚫 Developer tools are disabled during the assessment.')
+                setShowWarning(true)
+                setTimeout(() => setShowWarning(false), 3000)
+            }
+        }
+        document.addEventListener('keydown', preventKeys, true)
+        return () => document.removeEventListener('keydown', preventKeys, true)
+    }, [proctoring.enabled, recordViolation, user])
+
+    // ── Multiple Monitor Detection ──
+    const triggerMonitorViolation = useCallback((reason) => {
+        setMultipleMonitors(true)
+        setMultipleMonitorCount(prev => {
+            const next = prev + 1
+            socketService.emitProctoringViolation(user.id, user.name || user.email, 'multiple_monitors', next >= 2 ? 'critical' : 'warning', null)
+            recordViolation('multiple_monitors', next >= 2 ? 'critical' : 'warning')
+            setWarningMessage(`🖥️ Multiple monitors detected! (${next}) Please disconnect external displays.`)
+            setShowWarning(true)
+            setTimeout(() => setShowWarning(false), 6000)
+            return next
+        })
+    }, [user, recordViolation])
+
+    const detectMultipleMonitors = useCallback(() => {
+        let detected = false
+        let reason = ''
+        if ('isExtended' in window.screen && window.screen.isExtended) {
+            detected = true; reason = 'screen.isExtended — multi-screen'
+        }
+        const screenW = window.screen.width, screenH = window.screen.height
+        const availW = window.screen.availWidth, availH = window.screen.availHeight
+        if (screenW > screenH * 2.5) { detected = true; reason = `Ultra-wide (${screenW}x${screenH})` }
+        const winLeft = window.screenX || window.screenLeft || 0
+        const winTop = window.screenY || window.screenTop || 0
+        if (winLeft < 0 || winLeft >= screenW || winTop < 0 || winTop >= screenH) {
+            detected = true; reason = `Window on secondary (pos: ${winLeft},${winTop})`
+        }
+        if (availW > screenW || availH > screenH) {
+            detected = true; reason = 'Available area exceeds screen'
+        }
+        if (detected && !multipleMonitors) { triggerMonitorViolation(reason) }
+        else if (!detected && multipleMonitors) { setMultipleMonitors(false) }
+        if ('getScreenDetails' in window) {
+            window.getScreenDetails().then(sd => {
+                if (sd.screens.length > 1 && !multipleMonitors) triggerMonitorViolation(`${sd.screens.length} screens via API`)
+            }).catch(() => {})
+        }
+        return detected
+    }, [multipleMonitors, triggerMonitorViolation])
+
+    useEffect(() => {
+        if (!proctoring.enabled) return
+        detectMultipleMonitors()
+        monitorCheckIntervalRef.current = setInterval(detectMultipleMonitors, 5000)
+        const handleResize = () => detectMultipleMonitors()
+        window.addEventListener('resize', handleResize)
+        const handleScreenChange = () => detectMultipleMonitors()
+        if (window.screen?.addEventListener) window.screen.addEventListener('change', handleScreenChange)
+        return () => {
+            if (monitorCheckIntervalRef.current) clearInterval(monitorCheckIntervalRef.current)
+            window.removeEventListener('resize', handleResize)
+            if (window.screen?.removeEventListener) window.screen.removeEventListener('change', handleScreenChange)
+        }
+    }, [proctoring.enabled, detectMultipleMonitors])
+
+    // ── Proctor Agent Termination Listener ──
+    useEffect(() => {
+        if (!proctoring.enabled) return
+        socketService.connect()
+        socketService.joinStudentSession(user.id, behaviorSessionId.current)
+        const handleTerminate = (data) => {
+            console.error('[ProctorAgent] TEST TERMINATED BY AGENT:', data)
+            autoTerminateTest(data?.reason || 'Your test has been terminated by the Proctoring Intelligence Agent due to integrity violations.')
+        }
+        socketService.onAgentTerminate(handleTerminate)
+        return () => { socketService.removeListener('agent_terminate') }
+    }, [proctoring.enabled, user.id, autoTerminateTest])
+
+    // ── Behavior Agent: periodic flush + engagement tracking ──
+    useEffect(() => {
+        if (!proctoring.enabled) return
+        behaviorSendInterval.current = setInterval(flushBehaviorEvents, BEHAVIOR_SEND_INTERVAL_MS)
+
+        const throttle = (fn, ms) => { let last = 0; return () => { const now = Date.now(); if (now - last > ms) { last = now; fn() } } }
+        const handleMouseMove = throttle(() => pushBehaviorEvent('mouse'), 5000)
+        const handleScroll = throttle(() => pushBehaviorEvent('scroll'), 5000)
+        const handleFocus = () => pushBehaviorEvent('focus')
+        const handleBlur = () => pushBehaviorEvent('blur')
+
+        document.addEventListener('mousemove', handleMouseMove)
+        document.addEventListener('scroll', handleScroll, true)
+        window.addEventListener('focus', handleFocus)
+        window.addEventListener('blur', handleBlur)
+
+        return () => {
+            if (behaviorSendInterval.current) clearInterval(behaviorSendInterval.current)
+            document.removeEventListener('mousemove', handleMouseMove)
+            document.removeEventListener('scroll', handleScroll, true)
+            window.removeEventListener('focus', handleFocus)
+            window.removeEventListener('blur', handleBlur)
+            if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
+            flushBehaviorEvents()
+        }
+    }, [proctoring.enabled, flushBehaviorEvents, pushBehaviorEvent])
 
     const handleAnswerSelect = (questionId, answer) => {
         setAnswers(prev => ({ ...prev, [questionId]: answer }))
@@ -560,7 +803,7 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
     }
 
     const handleSubmit = async (auto = false) => {
-        if (isSubmitting) return
+        if (isSubmitting || terminatedRef.current) return
         if (!auto && totalQuestions > 0 && Object.keys(answers).length < totalQuestions) {
             if (!window.confirm(`You have ${totalQuestions - Object.keys(answers).length} unanswered. Submit anyway?`)) return
         }
@@ -569,11 +812,15 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
         submittedRef.current = true
         setIsSubmitting(true)
 
+        // Flush behavior events before submission
+        await flushBehaviorEvents()
+
         if (mediaStream) {
             mediaStream.getTracks().forEach(t => t.stop())
         }
         if (cameraCheckIntervalRef.current) clearInterval(cameraCheckIntervalRef.current)
         if (phoneCheckIntervalRef.current) clearInterval(phoneCheckIntervalRef.current)
+        if (monitorCheckIntervalRef.current) clearInterval(monitorCheckIntervalRef.current)
 
         // Exit fullscreen immediately before making the API call
         if (document.fullscreenElement) {
@@ -584,7 +831,6 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
 
         try {
             const timeSpent = (test.duration || 120) * 60 - timeLeftRef.current
-            console.log('[Submit] Sending submission...')
 
             // Emit completion to live monitoring
             if (user && test) {
@@ -609,7 +855,10 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
                 cameraBlockedCount: cameraBlockedCountRef.current,
                 phoneDetectionCount: phoneDetectionCountRef.current,
                 faceMissingCount: faceMissingCountRef.current,
-                proctoringEnabled: proctoring.enabled || false
+                totalViolations: totalViolationsRef.current,
+                multipleMonitorCount,
+                proctoringEnabled: proctoring.enabled || false,
+                behaviorSessionId: behaviorSessionId.current
             })
             console.log('[Submit] Response received:', JSON.stringify(res.data).substring(0, 500))
 
@@ -930,6 +1179,23 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
             )}
 
             {/* Submitting Overlay */}
+
+            {/* Agent Termination Overlay */}
+            {agentTerminated && (
+                <div style={{
+                    position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.98)',
+                    zIndex: 100002, display: 'flex', alignItems: 'center', justifyContent: 'center'
+                }}>
+                    <div style={{ textAlign: 'center', maxWidth: '500px', padding: '2rem' }}>
+                        <div style={{ width: 80, height: 80, borderRadius: '50%', background: 'linear-gradient(135deg, #ef4444, #dc2626)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem', boxShadow: '0 8px 24px rgba(239, 68, 68, 0.4)' }}>
+                            <Shield size={40} color="white" />
+                        </div>
+                        <h2 style={{ color: '#ef4444', fontSize: '1.75rem', fontWeight: 800, margin: '0 0 1rem' }}>Test Terminated</h2>
+                        <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '1rem', lineHeight: 1.6 }}>{terminateReason}</p>
+                        <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.85rem', marginTop: '1.5rem' }}>Your answers have been submitted. Redirecting...</p>
+                    </div>
+                </div>
+            )}
             {isSubmitting && (
                 <div style={{
                     position: 'fixed',
@@ -1314,6 +1580,16 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
                                     <div style={{ display: 'flex', justifyContent: 'space-between', color: '#e2e8f0', fontWeight: 500 }}>
                                         <span>Face Missing:</span>
                                         <span style={{ color: faceMissingCount > 0 ? '#f59e0b' : '#10b981', fontWeight: 700 }}>{faceMissingCount}</span>
+                                    </div>
+                                    {multipleMonitorCount > 0 && (
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#e2e8f0', fontWeight: 500 }}>
+                                            <span>Multi-Monitor:</span>
+                                            <span style={{ color: '#ef4444', fontWeight: 700 }}>{multipleMonitorCount}</span>
+                                        </div>
+                                    )}
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#e2e8f0', fontWeight: 500, paddingTop: '0.5rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                                        <span>Total Violations:</span>
+                                        <span style={{ color: totalViolations >= 7 ? '#ef4444' : totalViolations >= 4 ? '#f59e0b' : '#10b981', fontWeight: 700 }}>{totalViolations}/{MAX_VIOLATIONS}</span>
                                     </div>
                                 </div>
 

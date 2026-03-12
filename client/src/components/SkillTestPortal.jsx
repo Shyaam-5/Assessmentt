@@ -56,6 +56,10 @@ export default function SkillTestPortal({ user }) {
     const terminatedRef = useRef(false);
     const MAX_VIOLATIONS = 10;
 
+    // Multiple monitor detection
+    const [multipleMonitors, setMultipleMonitors] = useState(false);
+    const multiMonitorIntervalRef = useRef(null);
+
     useEffect(() => {
         loadTests();
         loadProctoringModel();
@@ -167,6 +171,11 @@ export default function SkillTestPortal({ user }) {
                 testStage: currentView,
                 eventType, details, severity
             });
+            // Emit to Socket.IO for live monitoring
+            socketService.emitProctoringViolation(
+                user?.id, user?.name || user?.email || 'Student',
+                eventType, severity, null
+            );
             setProctoringStats(prev => {
                 const next = {
                     ...prev,
@@ -223,6 +232,80 @@ export default function SkillTestPortal({ user }) {
         document.addEventListener('visibilitychange', handleVisibility);
         return () => document.removeEventListener('visibilitychange', handleVisibility);
     }, [activeAttempt, currentView]);
+
+    // Window blur detection (separate from visibilitychange – catches Alt+Tab, clicking outside)
+    useEffect(() => {
+        if (!activeAttempt || currentView === 'list' || currentView === 'report' || attemptData?.proctoring_enabled === false) return;
+        const handleBlur = () => {
+            logProctoringRef.current?.('window_blur', 'Window lost focus (possible Alt+Tab or clicking outside)', 'high');
+        };
+        window.addEventListener('blur', handleBlur);
+        return () => window.removeEventListener('blur', handleBlur);
+    }, [activeAttempt, currentView, attemptData]);
+
+    // DevTools blocking
+    useEffect(() => {
+        if (!activeAttempt || currentView === 'list' || currentView === 'report' || attemptData?.proctoring_enabled === false) return;
+        const blockDevTools = (e) => {
+            if (
+                e.key === 'F12' ||
+                (e.ctrlKey && e.shiftKey && ['I', 'J', 'C'].includes(e.key.toUpperCase())) ||
+                (e.ctrlKey && e.key.toUpperCase() === 'U') ||
+                e.key === 'PrintScreen'
+            ) {
+                e.preventDefault();
+                e.stopPropagation();
+                logProctoringRef.current?.('devtools_attempt', `Blocked key: ${e.key}`, 'high');
+            }
+        };
+        window.addEventListener('keydown', blockDevTools, true);
+        return () => window.removeEventListener('keydown', blockDevTools, true);
+    }, [activeAttempt, currentView, attemptData]);
+
+    // Multiple monitor detection
+    useEffect(() => {
+        if (!activeAttempt || currentView === 'list' || currentView === 'report' || attemptData?.proctoring_enabled === false) return;
+        const checkMonitors = async () => {
+            let detected = false;
+            // Method 1: screen.isExtended
+            if (typeof screen !== 'undefined' && screen.isExtended) detected = true;
+            // Method 2: dimension heuristics
+            if (typeof screen !== 'undefined') {
+                if (screen.width > 2560 || screen.availWidth > 2560) detected = true;
+                if (screen.availLeft < 0 || screen.availTop < 0) detected = true;
+                if (screen.width - screen.availWidth > 200) detected = true;
+            }
+            // Method 3: Screen Details API
+            try {
+                if (typeof window !== 'undefined' && 'getScreenDetails' in window) {
+                    const details = await window.getScreenDetails();
+                    if (details.screens && details.screens.length > 1) detected = true;
+                }
+            } catch {}
+            if (detected && !multipleMonitors) {
+                setMultipleMonitors(true);
+                logProctoringRef.current?.('multiple_monitors', 'Multiple monitors detected', 'high');
+            }
+        };
+        checkMonitors();
+        multiMonitorIntervalRef.current = setInterval(checkMonitors, 5000);
+        return () => { if (multiMonitorIntervalRef.current) clearInterval(multiMonitorIntervalRef.current); };
+    }, [activeAttempt, currentView, attemptData, multipleMonitors]);
+
+    // Fullscreen re-enforcement (re-request when student escapes)
+    useEffect(() => {
+        if (!activeAttempt || currentView === 'list' || currentView === 'report' || attemptData?.proctoring_enabled === false) return;
+        const handleFSReinforce = () => {
+            if (!document.fullscreenElement && !terminatedRef.current) {
+                setTimeout(() => {
+                    const target = containerRef.current || document.documentElement;
+                    target.requestFullscreen().catch(() => {});
+                }, 500);
+            }
+        };
+        document.addEventListener('fullscreenchange', handleFSReinforce);
+        return () => document.removeEventListener('fullscreenchange', handleFSReinforce);
+    }, [activeAttempt, currentView, attemptData]);
 
     // Update camera active status
     useEffect(() => {
@@ -405,10 +488,15 @@ export default function SkillTestPortal({ user }) {
         setCameraError('');
     };
 
-    // Enable camera
+    // Enable camera — pick first local webcam to avoid Windows phone-camera picker
     const enableCamera = async () => {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }, audio: false });
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const webcam = devices.find(d => d.kind === 'videoinput' && d.deviceId);
+            const videoConstraints = webcam?.deviceId
+                ? { deviceId: { exact: webcam.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+                : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' };
+            const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
             setCameraStream(stream);
             setCameraError('');
             if (videoRef.current) {
@@ -458,6 +546,12 @@ export default function SkillTestPortal({ user }) {
                 studentName: user?.name || user?.username || 'Student'
             });
             setActiveAttempt(data.attemptId);
+            socketService.emitSubmissionStarted({
+                testId,
+                studentId: user?.id,
+                studentName: user?.name || user?.email,
+                type: 'skill_test'
+            });
             await loadAttemptData(data.attemptId);
         } catch (err) {
             setError(err.response?.data?.error || err.message);

@@ -370,8 +370,14 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
 
     const initializeMedia = async () => {
         try {
+            // Pick first local webcam to avoid Windows phone-camera picker
+            const devices = await navigator.mediaDevices.enumerateDevices()
+            const webcam = devices.find(d => d.kind === 'videoinput' && d.deviceId)
+            const videoConstraints = webcam?.deviceId
+                ? { deviceId: { exact: webcam.deviceId }, width: 640, height: 480 }
+                : { width: 640, height: 480, facingMode: 'user' }
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: { width: 640, height: 480, facingMode: 'user' },
+                video: videoConstraints,
                 audio: true
             })
             setMediaStream(stream)

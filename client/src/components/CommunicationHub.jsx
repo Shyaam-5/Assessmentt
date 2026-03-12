@@ -73,6 +73,8 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
     const logViolation = useCallback(async (eventType, severity = 'low', details = '') => {
         if (terminatedRef.current) return
         addViolation(1)
+        // Emit to Socket.IO for real-time admin live monitoring
+        socketService.emitProctoringViolation(userId, '', eventType, severity, null)
         try {
             await axios.post(`${API_BASE}/proctoring/log`, {
                 userId, sessionId, eventType, severity, details
@@ -191,8 +193,14 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
     const initCamera = useCallback(async () => {
         if (!cfg.camera) return
         try {
+            // Pick first local webcam to avoid Windows phone-camera picker
+            const devices = await navigator.mediaDevices.enumerateDevices()
+            const webcam = devices.find(d => d.kind === 'videoinput' && d.deviceId)
+            const videoConstraints = webcam?.deviceId
+                ? { deviceId: { exact: webcam.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+                : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+                video: videoConstraints,
                 audio: false
             })
             setMediaStream(stream)

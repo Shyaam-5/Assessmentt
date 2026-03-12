@@ -105,7 +105,6 @@ function StudentPortal() {
             icon: <ClipboardList size={20} />,
             defaultExpanded: false,
             children: [
-                { path: '/student/assignments', label: t('coding_problems'), icon: <Code size={20} /> },
                 { path: '/student/aptitude', label: t('aptitude_tests'), icon: <Brain size={20} /> },
                 { path: '/student/global-tests', label: t('global_complete_tests'), icon: <Layers size={20} /> },
                 { path: '/student/skill-tests', label: 'Skill Tests', icon: <Target size={20} /> },

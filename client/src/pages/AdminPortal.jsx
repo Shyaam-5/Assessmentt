@@ -120,20 +120,10 @@ function AdminPortal() {
             icon: <FileCode size={20} />,
             defaultExpanded: false,
             children: [
-                { path: '/admin/global-problems', label: t('global_problems'), icon: <FileCode size={20} /> },
                 { path: '/admin/aptitude-tests', label: t('aptitude_tests'), icon: <Target size={20} /> },
                 { path: '/admin/global-tests', label: t('global_complete_tests'), icon: <ClipboardList size={20} /> },
                 { path: '/admin/skill-tests', label: 'Skill Tests', icon: <Brain size={20} /> },
                 { path: '/admin/communication-tests', label: 'Communication Tests', icon: <MessageSquare size={20} /> }
-            ]
-        },
-
-        {
-            label: 'Rankings',
-            icon: <Trophy size={20} />,
-            defaultExpanded: false,
-            children: [
-                { path: '/admin/student-leaderboard', label: t('student_ranks'), icon: <Trophy size={20} /> }
             ]
         },
 
@@ -1377,7 +1367,7 @@ function AllSubmissions() {
             alert(`✅ Reset Complete!\n\n` +
                 `• Code submissions deleted: ${response.data.deletedCodeSubmissions}\n` +
                 `• Aptitude submissions deleted: ${response.data.deletedAptitudeSubmissions}\n` +
-                `• Global test submissions deleted: ${response.data.deletedGlobalSubmissions || 0}`)
+                ``)
             fetchSubmissions() // Refresh the list
         } catch (err) {
             alert('❌ Failed to reset submissions: ' + (err.response?.data?.error || err.message))
@@ -1654,24 +1644,6 @@ function AllSubmissions() {
                                         >
                                             <Eye size={14} /> Results
                                         </button>
-                                    ) : sub.subType === 'global' ? (
-                                        <button
-                                            onClick={() => setViewGlobalReport(sub.id)}
-                                            style={{
-                                                background: 'rgba(59, 130, 246, 0.1)',
-                                                border: 'none',
-                                                color: '#3b82f6',
-                                                padding: '0.4rem 0.75rem',
-                                                borderRadius: '6px',
-                                                cursor: 'pointer',
-                                                fontSize: '0.8rem',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: '4px'
-                                            }}
-                                        >
-                                            <Eye size={14} /> Full Report
-                                        </button>
                                     ) : (
                                         <button
                                             onClick={() => setViewReport(sub)}
@@ -1710,8 +1682,6 @@ function AllSubmissions() {
                     isStudentView={false}
                 />
             )}
-
-
 
             {viewReport && (
                 <AdminSubmissionReportModal

@@ -3,6 +3,10 @@
 backend/.env
 server.js
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Frontend dependencies & build output
 client/node_modules/
 client/dist/
