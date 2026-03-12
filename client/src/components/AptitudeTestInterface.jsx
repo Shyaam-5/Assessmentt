@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { X, Clock, CheckCircle, XCircle, AlertTriangle, ChevronLeft, ChevronRight, Send, Eye, Brain, Target, Award, Sparkles } from 'lucide-react'
+import { X, Clock, CheckCircle, XCircle, AlertTriangle, ChevronLeft, ChevronRight, Send, Eye, Brain, Target, Award, Sparkles, Shield } from 'lucide-react'
 import axios from 'axios'
+import socketService from '@/services/socketService'
 
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3000') + '/api'
 
@@ -60,36 +61,113 @@ function AptitudeTestInterface({ test, user, onClose, onComplete }) {
     const answersRef = useRef(answers)
     const tabSwitchesRef = useRef(tabSwitches)
     const timeLeftRef = useRef(timeLeft)
+    const submittedRef = useRef(false)
+
+    // ── Unified Violation Counter ──
+    const MAX_VIOLATIONS = 10
+    const totalViolationsRef = useRef(0)
+    const terminatedRef = useRef(false)
+    const [totalViolations, setTotalViolations] = useState(0)
+    const [agentTerminated, setAgentTerminated] = useState(false)
+    const [terminateReason, setTerminateReason] = useState('')
+
+    // ── Multiple Monitor Detection ──
+    const [multipleMonitors, setMultipleMonitors] = useState(false)
+    const [multipleMonitorCount, setMultipleMonitorCount] = useState(0)
+    const monitorCheckIntervalRef = useRef(null)
+
+    // ── Session ID for proctoring log ──
+    const proctoringSessionId = useRef(`apt_${user.id}_${test.id}_${Date.now()}`)
 
     // Keep refs in sync with state (to avoid stale closures in timer)
-    useEffect(() => {
-        answersRef.current = answers
-    }, [answers])
+    useEffect(() => { answersRef.current = answers }, [answers])
+    useEffect(() => { tabSwitchesRef.current = tabSwitches }, [tabSwitches])
+    useEffect(() => { timeLeftRef.current = timeLeft }, [timeLeft])
 
-    useEffect(() => {
-        tabSwitchesRef.current = tabSwitches
-    }, [tabSwitches])
+    // ── Auto-terminate test ──
+    const autoTerminateTest = useCallback(async (reason) => {
+        if (terminatedRef.current) return
+        terminatedRef.current = true
+        submittedRef.current = true
+        setAgentTerminated(true)
+        setTerminateReason(reason)
+        setShowWarning(true)
+        setWarningMessage('🛑 Test terminated — submitting your work')
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
+        if (monitorCheckIntervalRef.current) clearInterval(monitorCheckIntervalRef.current)
+        try {
+            const timeSpent = (test.duration * 60) - timeLeftRef.current
+            socketService.emitSubmissionCompleted(user.id, user.name || user.email, test.id, test.title, null, 'terminated', 0)
+            const res = await axios.post(`${API_BASE}/aptitude/${test.id}/submit`, {
+                studentId: user.id,
+                answers: answersRef.current,
+                timeSpent,
+                tabSwitches: tabSwitchesRef.current,
+                submissionType: 'auto_terminated',
+                terminationReason: reason
+            })
+            const submissionResult = res.data.submission || res.data
+            setTimeout(() => { onClose(); onComplete && onComplete(submissionResult) }, 3000)
+        } catch (err) {
+            console.error('Auto-terminate submission failed:', err)
+            setTimeout(() => { onClose() }, 3000)
+        }
+    }, [user, test, onClose, onComplete])
 
-    useEffect(() => {
-        timeLeftRef.current = timeLeft
-    }, [timeLeft])
+    // ── Unified violation recorder ──
+    const recordViolation = useCallback((eventType = 'unknown', severity = 'low') => {
+        if (terminatedRef.current) return
+        totalViolationsRef.current += 1
+        const count = totalViolationsRef.current
+        setTotalViolations(count)
+        axios.post(`${API_BASE}/proctoring/log`, {
+            userId: user.id,
+            sessionId: proctoringSessionId.current,
+            eventType,
+            severity,
+            details: `Violation ${count}/${MAX_VIOLATIONS}`
+        }).catch(() => {})
+        if (count >= MAX_VIOLATIONS) {
+            autoTerminateTest(`Maximum proctoring violations reached (${count}/${MAX_VIOLATIONS}). Your test has been automatically terminated.`)
+        }
+    }, [autoTerminateTest, user.id])
 
-    // Enter fullscreen on mount
+    // Enter fullscreen on mount + re-enforce + Socket.IO init
     useEffect(() => {
         const enterFullscreen = async () => {
             try {
-                await document.documentElement.requestFullscreen()
-            } catch (err) {
-                console.log('Fullscreen request failed:', err)
-            }
+                if (!document.fullscreenElement && !submittedRef.current) {
+                    await document.documentElement.requestFullscreen()
+                }
+            } catch (_) {}
         }
         enterFullscreen()
 
-        return () => {
-            if (document.fullscreenElement) {
-                document.exitFullscreen().catch(() => { })
+        const handleFullscreenChange = () => {
+            if (!document.fullscreenElement && !submittedRef.current) {
+                setWarningMessage('⚠️ Fullscreen mode required! Re-entering...')
+                setShowWarning(true)
+                recordViolation('fullscreen_exit', 'medium')
+                setTimeout(() => {
+                    if (!submittedRef.current) enterFullscreen()
+                    setShowWarning(false)
+                }, 1500)
             }
         }
+        document.addEventListener('fullscreenchange', handleFullscreenChange)
+
+        // Socket.IO init
+        if (test && user) {
+            socketService.emitSubmissionStarted(user.id, user.name || user.email, test.id, test.title, null, true)
+        }
+
+        return () => {
+            document.removeEventListener('fullscreenchange', handleFullscreenChange)
+            if (document.fullscreenElement && !submittedRef.current) {
+                document.exitFullscreen().catch(() => {})
+            }
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
     // Timer countdown
@@ -113,60 +191,154 @@ function AptitudeTestInterface({ test, user, onClose, onComplete }) {
     // Get max tab switches from test config (default to 3)
     const maxAllowedTabSwitches = test.maxTabSwitches || 3
 
-    // Tab switch detection
+    // Tab switch detection + window blur
     useEffect(() => {
         const handleVisibilityChange = () => {
-            if (document.hidden && !result && !forceExit) {
+            if (document.hidden && !result && !forceExit && !terminatedRef.current) {
                 setTabSwitches(prev => {
                     const newCount = prev + 1
+                    socketService.emitProctoringViolation(user.id, user.name || user.email, 'window_switch', newCount >= maxAllowedTabSwitches ? 'critical' : 'warning', null)
+                    recordViolation('window_switch', newCount >= maxAllowedTabSwitches ? 'critical' : 'warning')
 
                     if (newCount >= maxAllowedTabSwitches) {
-                        // Max violations reached - Force exit
-                        setWarningMessage(`🚫 DISQUALIFIED! You have exceeded the maximum allowed tab switches (${newCount}/${maxAllowedTabSwitches}). Test terminated.`)
+                        setWarningMessage(`🚫 DISQUALIFIED! Max tab switches exceeded (${newCount}/${maxAllowedTabSwitches}). Test terminated.`)
                         setShowWarning(true)
                         setForceExit(true)
-
-                        // Auto-submit with penalty
-                        setTimeout(() => {
-                            handleAutoSubmit(true)
-                        }, 3000)
+                        setTimeout(() => handleAutoSubmit(true), 3000)
                     } else {
-                        setWarningMessage(`⚠️ Tab switch detected! (${newCount}/${maxAllowedTabSwitches} violations) ${maxAllowedTabSwitches - newCount} more will disqualify you!`)
+                        setWarningMessage(`⚠️ Tab switch detected! (${newCount}/${maxAllowedTabSwitches}) ${maxAllowedTabSwitches - newCount} more will disqualify you!`)
                         setShowWarning(true)
                         setTimeout(() => setShowWarning(false), 4000)
                     }
-
                     return newCount
                 })
             }
         }
-
+        const handleBlur = () => {
+            if (!document.hidden && !result && !forceExit && !terminatedRef.current) {
+                recordViolation('window_blur', 'medium')
+            }
+        }
         document.addEventListener('visibilitychange', handleVisibilityChange)
-        return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-    }, [result, forceExit])
+        window.addEventListener('blur', handleBlur)
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange)
+            window.removeEventListener('blur', handleBlur)
+        }
+    }, [result, forceExit, recordViolation])
 
-    // Prevent right-click and key shortcuts
+    // Copy/paste/cut prevention + DevTools blocking
     useEffect(() => {
+        const preventClipboard = (e) => {
+            e.preventDefault()
+            recordViolation('copy_paste', 'medium')
+            socketService.emitProctoringViolation(user.id, user.name || user.email, e.type + '_attempt', 'warning', null)
+        }
         const preventContextMenu = (e) => e.preventDefault()
-        const preventShortcuts = (e) => {
+        const preventKeys = (e) => {
+            // DevTools blocking
+            if (e.key === 'F12' ||
+                (e.ctrlKey && e.shiftKey && ['I','i','J','j','C','c'].includes(e.key)) ||
+                (e.ctrlKey && ['u','U'].includes(e.key)) ||
+                e.key === 'PrintScreen') {
+                e.preventDefault()
+                e.stopPropagation()
+                recordViolation('devtools_attempt', 'high')
+                socketService.emitProctoringViolation(user.id, user.name || user.email, 'devtools_attempt', 'high', null)
+                setWarningMessage('🚫 Developer tools are disabled during the assessment.')
+                setShowWarning(true)
+                setTimeout(() => setShowWarning(false), 3000)
+                return
+            }
+            // Other shortcuts
             if (e.ctrlKey || e.altKey || e.metaKey) {
-                if (['c', 'v', 'u', 'p', 's', 'a'].includes(e.key.toLowerCase())) {
+                if (['c', 'v', 'p', 's', 'a'].includes(e.key.toLowerCase())) {
                     e.preventDefault()
                 }
             }
-            if (e.key === 'F12' || e.key === 'Escape') {
-                e.preventDefault()
-            }
+            if (e.key === 'Escape') e.preventDefault()
         }
 
+        document.addEventListener('copy', preventClipboard)
+        document.addEventListener('paste', preventClipboard)
+        document.addEventListener('cut', preventClipboard)
         document.addEventListener('contextmenu', preventContextMenu)
-        document.addEventListener('keydown', preventShortcuts)
-
+        document.addEventListener('keydown', preventKeys, true)
         return () => {
+            document.removeEventListener('copy', preventClipboard)
+            document.removeEventListener('paste', preventClipboard)
+            document.removeEventListener('cut', preventClipboard)
             document.removeEventListener('contextmenu', preventContextMenu)
-            document.removeEventListener('keydown', preventShortcuts)
+            document.removeEventListener('keydown', preventKeys, true)
         }
-    }, [])
+    }, [recordViolation, user])
+
+    // ── Multiple Monitor Detection ──
+    const triggerMonitorViolation = useCallback((reason) => {
+        setMultipleMonitors(true)
+        setMultipleMonitorCount(prev => {
+            const next = prev + 1
+            socketService.emitProctoringViolation(user.id, user.name || user.email, 'multiple_monitors', next >= 2 ? 'critical' : 'warning', null)
+            recordViolation('multiple_monitors', next >= 2 ? 'critical' : 'warning')
+            setWarningMessage(`🖥️ Multiple monitors detected! (${next}) Please disconnect external displays.`)
+            setShowWarning(true)
+            setTimeout(() => setShowWarning(false), 6000)
+            return next
+        })
+    }, [user, recordViolation])
+
+    const detectMultipleMonitors = useCallback(() => {
+        let detected = false
+        let reason = ''
+        if ('isExtended' in window.screen && window.screen.isExtended) {
+            detected = true; reason = 'screen.isExtended — multi-screen'
+        }
+        const screenW = window.screen.width, screenH = window.screen.height
+        const availW = window.screen.availWidth, availH = window.screen.availHeight
+        if (screenW > screenH * 2.5) { detected = true; reason = `Ultra-wide (${screenW}x${screenH})` }
+        const winLeft = window.screenX || window.screenLeft || 0
+        const winTop = window.screenY || window.screenTop || 0
+        if (winLeft < 0 || winLeft >= screenW || winTop < 0 || winTop >= screenH) {
+            detected = true; reason = `Window on secondary (pos: ${winLeft},${winTop})`
+        }
+        if (availW > screenW || availH > screenH) {
+            detected = true; reason = 'Available area exceeds screen'
+        }
+        if (detected && !multipleMonitors) { triggerMonitorViolation(reason) }
+        else if (!detected && multipleMonitors) { setMultipleMonitors(false) }
+        if ('getScreenDetails' in window) {
+            window.getScreenDetails().then(sd => {
+                if (sd.screens.length > 1 && !multipleMonitors) triggerMonitorViolation(`${sd.screens.length} screens via API`)
+            }).catch(() => {})
+        }
+        return detected
+    }, [multipleMonitors, triggerMonitorViolation])
+
+    useEffect(() => {
+        detectMultipleMonitors()
+        monitorCheckIntervalRef.current = setInterval(detectMultipleMonitors, 5000)
+        const handleResize = () => detectMultipleMonitors()
+        window.addEventListener('resize', handleResize)
+        const handleScreenChange = () => detectMultipleMonitors()
+        if (window.screen?.addEventListener) window.screen.addEventListener('change', handleScreenChange)
+        return () => {
+            if (monitorCheckIntervalRef.current) clearInterval(monitorCheckIntervalRef.current)
+            window.removeEventListener('resize', handleResize)
+            if (window.screen?.removeEventListener) window.screen.removeEventListener('change', handleScreenChange)
+        }
+    }, [detectMultipleMonitors])
+
+    // ── Proctor Agent Termination Listener ──
+    useEffect(() => {
+        socketService.connect()
+        socketService.joinStudentSession(user.id, proctoringSessionId.current)
+        const handleTerminate = (data) => {
+            console.error('[ProctorAgent] TEST TERMINATED BY AGENT:', data)
+            autoTerminateTest(data?.reason || 'Your test has been terminated by the Proctoring Intelligence Agent due to integrity violations.')
+        }
+        socketService.onAgentTerminate(handleTerminate)
+        return () => { socketService.removeListener('agent_terminate') }
+    }, [user.id, autoTerminateTest])
 
     const formatTime = (seconds) => {
         const mins = Math.floor(seconds / 60)
@@ -182,24 +354,42 @@ function AptitudeTestInterface({ test, user, onClose, onComplete }) {
     }
 
     const handleAutoSubmit = async (disqualified = false) => {
+        if (submittedRef.current) return
+        submittedRef.current = true
         setIsSubmitting(true)
         try {
-            // Use refs to get the latest values (avoids stale closure issues with timer)
             const currentAnswers = answersRef.current
             const currentTabSwitches = tabSwitchesRef.current
             const currentTimeLeft = timeLeftRef.current
+
+            if (monitorCheckIntervalRef.current) {
+                clearInterval(monitorCheckIntervalRef.current)
+                monitorCheckIntervalRef.current = null
+            }
 
             const response = await axios.post(`${API_BASE}/aptitude/${test.id}/submit`, {
                 studentId: user.id,
                 answers: disqualified ? {} : currentAnswers,
                 timeSpent: (test.duration * 60) - currentTimeLeft,
-                tabSwitches: currentTabSwitches
+                tabSwitches: currentTabSwitches,
+                totalViolations: totalViolationsRef.current,
+                multipleMonitorCount: multipleMonitorCount,
+                proctoringSessionId: proctoringSessionId.current
+            })
+
+            socketService.emitSubmissionCompleted({
+                testId: test.id,
+                studentId: user.id,
+                studentName: user.name || user.email,
+                type: 'aptitude',
+                disqualified
             })
 
             setResult(response.data.submission)
             setShowResult(true)
         } catch (error) {
             console.error('Submit failed:', error)
+            submittedRef.current = false
         } finally {
             setIsSubmitting(false)
         }
@@ -685,6 +875,27 @@ function AptitudeTestInterface({ test, user, onClose, onComplete }) {
             flexDirection: 'column',
             overflow: 'hidden'
         }}>
+            {/* Agent Termination Overlay */}
+            {agentTerminated && (
+                <div style={{
+                    position: 'fixed',
+                    inset: 0,
+                    zIndex: 99999,
+                    background: 'rgba(127, 29, 29, 0.97)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '1.5rem',
+                    padding: '2rem'
+                }}>
+                    <Shield size={64} color="#fca5a5" />
+                    <h1 style={{ color: '#fca5a5', fontSize: '2rem', margin: 0 }}>Test Terminated</h1>
+                    <p style={{ color: '#fecaca', fontSize: '1.1rem', textAlign: 'center', maxWidth: 600 }}>
+                        {terminateReason || 'Your test was terminated by the proctoring agent due to suspicious activity.'}
+                    </p>
+                </div>
+            )}
             {/* Header */}
             <div style={{
                 display: 'flex',
@@ -830,6 +1041,27 @@ function AptitudeTestInterface({ test, user, onClose, onComplete }) {
                                 background: 'rgba(71, 85, 105, 0.5)'
                             }}></div>
                             <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Unanswered</span>
+                        </div>
+
+                        {/* Proctoring Violations Counter */}
+                        <div style={{
+                            marginTop: '1rem',
+                            padding: '0.75rem',
+                            background: totalViolations > 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(16, 185, 129, 0.1)',
+                            borderRadius: '8px',
+                            border: `1px solid ${totalViolations > 0 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`
+                        }}>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>
+                                <Shield size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                                Violations
+                            </div>
+                            <div style={{
+                                fontSize: '1rem',
+                                fontWeight: 700,
+                                color: totalViolations > 0 ? '#ef4444' : '#10b981'
+                            }}>
+                                {totalViolations} / {MAX_VIOLATIONS}
+                            </div>
                         </div>
                     </div>
 

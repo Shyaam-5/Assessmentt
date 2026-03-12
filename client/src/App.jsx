@@ -1,9 +1,27 @@
-import { useState, useEffect, createContext, useContext } from 'react'
+import { useState, useEffect, createContext, useContext, Component } from 'react'
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import Login from './pages/Login'
 import StudentPortal from './pages/StudentPortal'
 import MentorPortal from './pages/MentorPortal'
 import AdminPortal from './pages/AdminPortal'
+
+// Error Boundary to catch React runtime errors
+class ErrorBoundary extends Component {
+    constructor(props) { super(props); this.state = { hasError: false, error: null } }
+    static getDerivedStateFromError(error) { return { hasError: true, error } }
+    componentDidCatch(error, info) { console.error('ErrorBoundary caught:', error, info) }
+    render() {
+        if (this.state.hasError) {
+            return (<div style={{ padding: 40, background: '#1e1e2e', color: '#ff6b6b', minHeight: '100vh', fontFamily: 'monospace' }}>
+                <h1>Something went wrong</h1>
+                <pre style={{ whiteSpace: 'pre-wrap', color: '#ffa07a' }}>{this.state.error?.message}</pre>
+                <pre style={{ whiteSpace: 'pre-wrap', color: '#888', fontSize: 12 }}>{this.state.error?.stack}</pre>
+                <button onClick={() => this.setState({ hasError: false, error: null })} style={{ marginTop: 20, padding: '10px 20px', background: '#4a4a6a', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer' }}>Try Again</button>
+            </div>)
+        }
+        return this.props.children
+    }
+}
 
 // Create Auth Context
 export const AuthContext = createContext(null)
@@ -135,6 +153,7 @@ function App() {
     return (
         <AuthContext.Provider value={{ user, login, logout }}>
             <ThemeContext.Provider value={{ theme, toggleTheme }}>
+                <ErrorBoundary>
                 <Routes>
                     <Route path="/login" element={
                         user ? <Navigate to={`/${user.role}`} replace /> : <Login />
@@ -164,6 +183,7 @@ function App() {
 
                     <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
+                </ErrorBoundary>
             </ThemeContext.Provider>
         </AuthContext.Provider>
     )

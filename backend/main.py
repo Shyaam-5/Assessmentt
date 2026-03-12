@@ -129,7 +129,6 @@ async def add_corp_header(request, call_next):
 # ─── Register routes ────────────────────────────────────────────
 
 from routes.auth import router as auth_router
-from routes.leaderboard import router as leaderboard_router
 from routes.tasks import router as tasks_router
 from routes.problems import router as problems_router
 from routes.submissions import router as submissions_router
@@ -157,7 +156,6 @@ app.include_router(chat_router)
 app.include_router(messaging_router)
 app.include_router(analytics_router)
 app.include_router(skill_tests_router)
-app.include_router(leaderboard_router)
 app.include_router(aptitude_router)
 app.include_router(global_tests_router)
 app.include_router(admin_router)

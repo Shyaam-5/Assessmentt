@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { AlertTriangle, Activity, BarChart3, Zap } from 'lucide-react'
 import socketService from '../services/socketService'
-import './LiveMonitoring.css'
 
 function AdminLiveMonitoring({ user }) {
     const [liveUpdates, setLiveUpdates] = useState([])
