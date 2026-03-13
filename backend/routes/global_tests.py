@@ -1,4 +1,12 @@
-"""Global test routes: CRUD for tests, questions, submissions, and AI reports."""
+"""Global Complete Test — CRUD, questions, submissions, grading, AI reports.
+
+Proctoring modes:
+  • standard     — Timer + basic tab-switch warning, no enforcement
+  • enhanced     — Browser-level proctoring (tab tracking, fullscreen,
+                   copy/paste block, DevTools block, multi-monitor)
+  • ai_proctored — Everything in enhanced PLUS camera/audio, phone/face
+                   detection via TF.js, behavior agent, AI fraud analysis
+"""
 
 import json
 import re
@@ -16,20 +24,27 @@ from services.ai_service import cerebras_chat
 
 router = APIRouter(prefix="/api", tags=["global-tests"])
 
+# ═══════════════════════════════════════════════════════════════════
+#  Constants
+# ═══════════════════════════════════════════════════════════════════
+
 PISTON_URL = "https://emkc.org/api/v2/piston/execute"
 SECTIONS = ["aptitude", "verbal", "logical", "coding", "sql"]
+PROCTORING_MODES = ("standard", "enhanced", "ai_proctored")
 
 LANGUAGE_MAP = {
-    "Python": {"language": "python", "version": "3.10.0"},
+    "Python":     {"language": "python",     "version": "3.10.0"},
     "JavaScript": {"language": "javascript", "version": "18.15.0"},
-    "Java": {"language": "java", "version": "15.0.2"},
-    "C": {"language": "c", "version": "10.2.0"},
-    "C++": {"language": "cpp", "version": "10.2.0"},
-    "SQL": {"language": "sqlite3", "version": "3.36.0"},
+    "Java":       {"language": "java",       "version": "15.0.2"},
+    "C":          {"language": "c",          "version": "10.2.0"},
+    "C++":        {"language": "cpp",        "version": "10.2.0"},
+    "SQL":        {"language": "sqlite3",    "version": "3.36.0"},
 }
 
 
-# ─── Request Bodies ────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+#  Request / Response Models
+# ═══════════════════════════════════════════════════════════════════
 
 class GlobalTestCreate(BaseModel):
     title: str = "Untitled"
@@ -72,14 +87,28 @@ class QuestionBatch(BaseModel):
 class GlobalTestSubmit(BaseModel):
     studentId: str
     answers: Optional[Dict[str, Any]] = None
+    selectedLanguages: Optional[Dict[str, str]] = None
     sectionScores: Optional[dict] = None
     timeSpent: int = 0
     tabSwitches: int = 0
+    copyPasteAttempts: int = 0
+    cameraBlockedCount: int = 0
+    phoneDetectionCount: int = 0
+    faceMissingCount: int = 0
+    totalViolations: int = 0
+    multipleMonitorCount: int = 0
+    proctoringEnabled: Optional[bool] = None
+    behaviorSessionId: Optional[str] = None
+    submissionType: Optional[str] = None
+    terminationReason: Optional[str] = None
 
 
-# ─── Helpers ───────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+#  Helpers — Pure Functions
+# ═══════════════════════════════════════════════════════════════════
 
 def _fmt_dt(iso: Optional[str]) -> Optional[str]:
+    """ISO string → MySQL datetime string."""
     if not iso or not iso.strip():
         return None
     try:
@@ -89,6 +118,7 @@ def _fmt_dt(iso: Optional[str]) -> Optional[str]:
 
 
 def _safe_json(val) -> Any:
+    """Parse a JSON string if needed, otherwise return as-is."""
     if val is None:
         return None
     if isinstance(val, str):
@@ -99,7 +129,185 @@ def _safe_json(val) -> Any:
     return val
 
 
+def _to_bool(v: Any, default: bool = False) -> bool:
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
+def _parse_dt(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _validate_schedule(start: Optional[str], end: Optional[str]):
+    s, e = _parse_dt(start), _parse_dt(end)
+    if start and not s:
+        raise HTTPException(400, "Invalid startTime format")
+    if end and not e:
+        raise HTTPException(400, "Invalid deadline format")
+    if s and e and s >= e:
+        raise HTTPException(400, "startTime must be earlier than deadline")
+
+
+async def _get_table_columns(cur, table_name: str) -> set[str]:
+    await cur.execute(
+        """SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""",
+        (table_name,),
+    )
+    rows = await cur.fetchall()
+    if not rows:
+        return set()
+    if isinstance(rows[0], dict):
+        return {r["COLUMN_NAME"] for r in rows}
+    return {r[0] for r in rows}
+
+
+# ── Proctoring Config Normaliser ──────────────────────────────────
+
+def _resolve_proctoring_mode(cfg: dict) -> str:
+    """Determine the effective proctoring mode from a config dict."""
+    explicit = cfg.get("mode", "").strip().lower()
+    if explicit in PROCTORING_MODES:
+        return explicit
+
+    # Infer from flags if no explicit mode set
+    enabled = _to_bool(cfg.get("enabled"), False)
+    if not enabled:
+        return "standard"
+
+    has_camera = _to_bool(cfg.get("enableVideoAudio", cfg.get("videoAudio")), False)
+    has_phone = _to_bool(cfg.get("detectPhoneUsage"), False)
+    has_face = _to_bool(cfg.get("detectCameraBlocking", cfg.get("enableFaceDetection")), False)
+
+    if has_camera or has_phone or has_face:
+        return "ai_proctored"
+    return "enhanced"
+
+
+def _normalize_proctoring_config(raw: Any, fallback_max_tab: int = 3) -> dict:
+    """Normalize a proctoring config dict with mode-aware defaults."""
+    cfg = raw if isinstance(raw, dict) else {}
+
+    mode = _resolve_proctoring_mode(cfg)
+    enabled = mode != "standard"
+
+    # Tab switches
+    track_tab = _to_bool(cfg.get("trackTabSwitches"), enabled)
+    max_tab = cfg.get("maxTabSwitches", fallback_max_tab)
+    try:
+        max_tab = max(0, int(max_tab))
+    except Exception:
+        max_tab = fallback_max_tab
+    if not enabled or not track_tab:
+        max_tab = 0
+
+    # Enhanced features (available in enhanced + ai_proctored)
+    is_enhanced = mode in ("enhanced", "ai_proctored")
+    disable_copy = _to_bool(cfg.get("disableCopyPaste"), is_enhanced)
+    fullscreen = _to_bool(cfg.get("enforceFullscreen"), is_enhanced)
+    auto_submit = _to_bool(cfg.get("autoSubmitOnViolation"), False)
+
+    # AI-proctored features (only in ai_proctored)
+    is_ai = mode == "ai_proctored"
+    enable_video = _to_bool(cfg.get("enableVideoAudio", cfg.get("videoAudio")), is_ai)
+    detect_block = _to_bool(cfg.get("detectCameraBlocking", cfg.get("enableFaceDetection")), is_ai)
+    detect_phone = _to_bool(cfg.get("detectPhoneUsage"), is_ai)
+
+    return {
+        "mode": mode,
+        "enabled": enabled,
+        "trackTabSwitches": track_tab,
+        "maxTabSwitches": max_tab,
+        "enableVideoAudio": enable_video,
+        "disableCopyPaste": disable_copy,
+        "detectCameraBlocking": detect_block,
+        "detectPhoneUsage": detect_phone,
+        "enforceFullscreen": fullscreen,
+        "autoSubmitOnViolation": auto_submit,
+        # Compat keys for consumers using older names
+        "videoAudio": enable_video,
+        "enableFaceDetection": detect_block,
+    }
+
+
+# ── Section Config Normaliser ─────────────────────────────────────
+
+def _normalize_section_config(raw: Any, fallback_duration: int) -> Optional[dict]:
+    if not isinstance(raw, dict):
+        return None
+
+    sections = raw.get("sections")
+    if not isinstance(sections, list):
+        return None
+
+    default_order = {s: i + 1 for i, s in enumerate(SECTIONS)}
+    normalised, seen = [], set()
+
+    for sec in sections:
+        if not isinstance(sec, dict):
+            continue
+        sid = str(sec.get("id", "")).strip().lower()
+        if sid not in SECTIONS or sid in seen:
+            continue
+        seen.add(sid)
+
+        try:
+            q_count = max(0, int(sec.get("questionsCount", 0)))
+        except Exception:
+            q_count = 0
+        try:
+            time_minutes = max(0, int(sec.get("timeMinutes", 0)))
+        except Exception:
+            time_minutes = 0
+        try:
+            order = int(sec.get("order", default_order[sid]))
+        except Exception:
+            order = default_order[sid]
+
+        normalised.append({
+            "id": sid,
+            "enabled": _to_bool(sec.get("enabled"), True),
+            "order": order,
+            "questionsCount": q_count,
+            "timeMinutes": time_minutes,
+        })
+
+    normalised.sort(key=lambda s: s["order"])
+
+    mode = raw.get("sectionTimeMode") or "fixed"
+    if mode not in ("fixed", "free"):
+        mode = "fixed"
+    try:
+        total = max(1, int(raw.get("totalDurationMinutes", fallback_duration)))
+    except Exception:
+        total = fallback_duration
+
+    return {"sections": normalised, "totalDurationMinutes": total, "sectionTimeMode": mode}
+
+
+# ── Response Formatter ────────────────────────────────────────────
+
 def _clean_global_test(t: dict) -> dict:
+    proctoring = _normalize_proctoring_config(
+        _safe_json(t.get("proctoring_config")),
+        fallback_max_tab=t.get("max_tab_switches") or 3,
+    )
+    section_cfg = _normalize_section_config(
+        _safe_json(t.get("section_config")),
+        fallback_duration=t.get("duration") or 180,
+    )
     return {
         "id": t["id"],
         "title": t["title"],
@@ -115,11 +323,15 @@ def _clean_global_test(t: dict) -> dict:
         "startTime": str(t["start_time"]) if t.get("start_time") else None,
         "deadline": str(t["deadline"]) if t.get("deadline") else None,
         "maxAttempts": t.get("max_attempts") or 1,
-        "maxTabSwitches": t.get("max_tab_switches") or 3,
-        "sectionConfig": _safe_json(t.get("section_config")),
-        "proctoring": _safe_json(t.get("proctoring_config")),
+        "maxTabSwitches": proctoring.get("maxTabSwitches", t.get("max_tab_switches") or 0),
+        "sectionConfig": section_cfg,
+        "proctoring": proctoring,
     }
 
+
+# ═══════════════════════════════════════════════════════════════════
+#  Code / SQL Execution Helpers
+# ═══════════════════════════════════════════════════════════════════
 
 def _normalize_sql(s: str) -> str:
     return "\n".join(l.strip() for l in s.split("\n") if l.strip())
@@ -128,14 +340,12 @@ def _normalize_sql(s: str) -> str:
 def _compare_sql_data_only(actual: str, expected: str) -> bool:
     try:
         def _extract(s: str):
-            normalised = s.replace("|", "\n").replace("\r", "")
-            lines = [l.strip() for l in normalised.split("\n") if l.strip()]
+            norm = s.replace("|", "\n").replace("\r", "")
+            lines = [l.strip() for l in norm.split("\n") if l.strip()]
             data_lines = [l for l in lines if re.search(r"\d", l) or "|" in l]
             all_vals = sorted(
                 v.strip().lower()
-                for l in lines
-                for v in re.split(r"[|\s]+", l)
-                if v.strip()
+                for l in lines for v in re.split(r"[|\s]+", l) if v.strip()
             )
             return "|".join(data_lines).lower(), "|".join(all_vals)
 
@@ -152,14 +362,13 @@ def _compare_sql_data_only(actual: str, expected: str) -> bool:
         return False
 
 
-async def _run_inline_coding_tests(code: str, language: str, test_cases: list) -> dict:
-    """Run code against test cases using Piston API."""
-    if not test_cases or not isinstance(test_cases, list) or len(test_cases) == 0:
+async def _run_coding_tests(code: str, language: str, test_cases: list) -> dict:
+    """Execute code against test cases via Piston API."""
+    if not test_cases:
         return {"passedCount": 0, "total": 0, "percentage": 0, "isCorrect": False}
 
     runtime = LANGUAGE_MAP.get(language, {"language": "python", "version": "3.10.0"})
     passed = 0
-
     async with httpx.AsyncClient(timeout=30) as client:
         for tc in test_cases:
             stdin = str(tc.get("input") or "")
@@ -171,8 +380,7 @@ async def _run_inline_coding_tests(code: str, language: str, test_cases: list) -
                     "files": [{"content": code}],
                     "stdin": stdin,
                 })
-                data = resp.json()
-                actual = (data.get("run", {}).get("output") or "").strip()
+                actual = (resp.json().get("run", {}).get("output") or "").strip()
                 if actual == expected:
                     passed += 1
             except Exception:
@@ -184,14 +392,13 @@ async def _run_inline_coding_tests(code: str, language: str, test_cases: list) -
 
 
 async def _run_sql_and_compare(schema: str, query: str, expected_output: str) -> dict:
-    """Run SQL via Piston and compare output."""
+    """Execute SQL via Piston and compare output."""
     expected = (expected_output or "").strip().replace("\r", "")
     try:
         full_q = f"{schema}\n\n{query}" if schema else query
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(PISTON_URL, json={
-                "language": "sqlite3",
-                "version": "3.36.0",
+                "language": "sqlite3", "version": "3.36.0",
                 "files": [{"content": full_q}],
             })
         data = resp.json()
@@ -208,22 +415,23 @@ async def _run_sql_and_compare(schema: str, query: str, expected_output: str) ->
         return {"isCorrect": False, "output": str(e)}
 
 
-# ─── CRUD Routes ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+#  CRUD Routes
+# ═══════════════════════════════════════════════════════════════════
 
 @router.get("/global-tests")
 async def list_global_tests(
     status: Optional[str] = None,
     type: Optional[str] = None,
 ):
+    """List all global tests, optionally filtered by status and/or type."""
     pool = await get_pool()
     query = "SELECT * FROM global_tests WHERE 1=1"
     params: list = []
     if status:
-        query += " AND status = %s"
-        params.append(status)
+        query += " AND status = %s"; params.append(status)
     if type:
-        query += " AND type = %s"
-        params.append(type)
+        query += " AND type = %s"; params.append(type)
     query += " ORDER BY created_at DESC"
 
     try:
@@ -240,6 +448,7 @@ async def list_global_tests(
 
 @router.get("/global-tests/{test_id}")
 async def get_global_test(test_id: str):
+    """Get a single test with all its questions grouped by section."""
     pool = await get_pool()
     try:
         async with pool.acquire() as conn:
@@ -248,7 +457,6 @@ async def get_global_test(test_id: str):
                 t = await cur.fetchone()
                 if not t:
                     raise HTTPException(404, "Test not found")
-
                 await cur.execute(
                     "SELECT * FROM test_questions WHERE test_id = %s ORDER BY section, question_id",
                     (test_id,),
@@ -302,17 +510,27 @@ async def get_global_test(test_id: str):
 
 @router.post("/global-tests")
 async def create_global_test(body: GlobalTestCreate):
+    """Create a new global test."""
     pool = await get_pool()
     test_id = str(uuid.uuid4())
-    sc_json = json.dumps(body.sectionConfig) if body.sectionConfig else None
-    pc_json = json.dumps(body.proctoring) if body.proctoring else None
+
+    if body.duration <= 0:
+        raise HTTPException(400, "duration must be greater than 0")
+    if body.passingScore < 0 or body.passingScore > 100:
+        raise HTTPException(400, "passingScore must be between 0 and 100")
+    if body.maxAttempts <= 0:
+        raise HTTPException(400, "maxAttempts must be greater than 0")
+    _validate_schedule(body.startTime, body.deadline)
+
+    section_cfg = _normalize_section_config(body.sectionConfig, body.duration)
+    proctoring_cfg = _normalize_proctoring_config(body.proctoring, body.maxTabSwitches or 3)
+
+    sc_json = json.dumps(section_cfg) if section_cfg else None
+    pc_json = json.dumps(proctoring_cfg)
+
     total_q = 0
-    if body.sectionConfig and body.sectionConfig.get("sections"):
-        total_q = sum(
-            s.get("questionsCount", 0)
-            for s in body.sectionConfig["sections"]
-            if s.get("enabled")
-        )
+    if section_cfg and section_cfg.get("sections"):
+        total_q = sum(s.get("questionsCount", 0) for s in section_cfg["sections"] if s.get("enabled"))
 
     try:
         async with pool.acquire() as conn:
@@ -329,21 +547,17 @@ async def create_global_test(body: GlobalTestCreate):
                         body.duration, total_q, body.passingScore,
                         body.status, body.createdBy, body.description,
                         _fmt_dt(body.startTime), _fmt_dt(body.deadline),
-                        body.maxAttempts, body.maxTabSwitches,
+                        body.maxAttempts, proctoring_cfg.get("maxTabSwitches", 0),
                         sc_json, pc_json,
                     ),
                 )
             await conn.commit()
 
         return {
-            "id": test_id,
-            "title": body.title,
-            "type": body.type,
-            "duration": body.duration,
-            "totalQuestions": total_q,
-            "passingScore": body.passingScore,
-            "status": body.status,
-            "sectionConfig": body.sectionConfig,
+            "id": test_id, "title": body.title, "type": body.type,
+            "duration": body.duration, "totalQuestions": total_q,
+            "passingScore": body.passingScore, "status": body.status,
+            "sectionConfig": section_cfg, "proctoring": proctoring_cfg,
         }
     except Exception as e:
         if "doesn't exist" in str(e):
@@ -353,7 +567,17 @@ async def create_global_test(body: GlobalTestCreate):
 
 @router.put("/global-tests/{test_id}")
 async def update_global_test(test_id: str, body: GlobalTestUpdate):
+    """Update an existing global test."""
     pool = await get_pool()
+
+    if body.duration is not None and body.duration <= 0:
+        raise HTTPException(400, "duration must be greater than 0")
+    if body.passingScore is not None and (body.passingScore < 0 or body.passingScore > 100):
+        raise HTTPException(400, "passingScore must be between 0 and 100")
+    if body.maxAttempts is not None and body.maxAttempts <= 0:
+        raise HTTPException(400, "maxAttempts must be greater than 0")
+    _validate_schedule(body.startTime, body.deadline)
+
     updates: list[str] = []
     params: list = []
 
@@ -366,30 +590,25 @@ async def update_global_test(test_id: str, body: GlobalTestUpdate):
     for attr, col in field_map.items():
         val = getattr(body, attr, None)
         if val is not None:
-            updates.append(f"{col} = %s")
-            params.append(val)
+            updates.append(f"{col} = %s"); params.append(val)
 
     if body.startTime is not None:
-        updates.append("start_time = %s")
-        params.append(_fmt_dt(body.startTime))
+        updates.append("start_time = %s"); params.append(_fmt_dt(body.startTime))
     if body.deadline is not None:
-        updates.append("deadline = %s")
-        params.append(_fmt_dt(body.deadline))
+        updates.append("deadline = %s"); params.append(_fmt_dt(body.deadline))
 
     if body.sectionConfig is not None:
-        updates.append("section_config = %s")
-        params.append(json.dumps(body.sectionConfig))
-        total_q = sum(
-            s.get("questionsCount", 0)
-            for s in body.sectionConfig.get("sections", [])
-            if s.get("enabled")
-        )
-        updates.append("total_questions = %s")
-        params.append(total_q)
+        dur = body.duration if body.duration is not None else 180
+        norm = _normalize_section_config(body.sectionConfig, dur)
+        updates.append("section_config = %s"); params.append(json.dumps(norm))
+        total_q = sum(s.get("questionsCount", 0) for s in (norm or {}).get("sections", []) if s.get("enabled"))
+        updates.append("total_questions = %s"); params.append(total_q)
 
     if body.proctoring is not None:
-        updates.append("proctoring_config = %s")
-        params.append(json.dumps(body.proctoring))
+        fb = body.maxTabSwitches if body.maxTabSwitches is not None else 3
+        norm_p = _normalize_proctoring_config(body.proctoring, fb)
+        updates.append("proctoring_config = %s"); params.append(json.dumps(norm_p))
+        updates.append("max_tab_switches = %s"); params.append(norm_p.get("maxTabSwitches", 0))
 
     if not updates:
         raise HTTPException(400, "No fields to update")
@@ -411,6 +630,7 @@ async def update_global_test(test_id: str, body: GlobalTestUpdate):
 
 @router.delete("/global-tests/{test_id}")
 async def delete_global_test(test_id: str):
+    """Delete a test and all related data (submissions, results, reports)."""
     pool = await get_pool()
     try:
         async with pool.acquire() as conn:
@@ -440,10 +660,13 @@ async def delete_global_test(test_id: str):
         raise HTTPException(500, str(e))
 
 
-# ─── Question routes ──────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+#  Question Routes
+# ═══════════════════════════════════════════════════════════════════
 
 @router.post("/global-tests/{test_id}/questions")
 async def add_questions(test_id: str, body: QuestionBatch):
+    """Batch-add questions to a section of a global test."""
     if body.section not in SECTIONS:
         raise HTTPException(400, f"Invalid section. Use: {', '.join(SECTIONS)}")
     if not body.questions:
@@ -465,25 +688,28 @@ async def add_questions(test_id: str, body: QuestionBatch):
                     if raw_tc:
                         tc_json = json.dumps(raw_tc) if not isinstance(raw_tc, str) else raw_tc
                     pts = q.get("points", 10 if qt in ("coding", "sql") else 1)
+                    try:
+                        time_limit = max(0, int(q.get("timeLimit") or q.get("time_limit") or 0))
+                    except Exception:
+                        time_limit = 0
 
                     await cur.execute(
                         """INSERT INTO test_questions
                            (question_id, test_id, section, question_type, question,
                             option_1, option_2, option_3, option_4,
                             correct_answer, explanation, category,
-                            test_cases, starter_code, solution_code, points)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                            test_cases, starter_code, solution_code, points, time_limit)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                         (
                             qid, test_id, body.section, qt,
                             q.get("question", ""),
                             opts[0], opts[1], opts[2], opts[3],
                             ca, q.get("explanation", ""), q.get("category", "general"),
-                            tc_json, q.get("starterCode"), q.get("solutionCode"), pts,
+                            tc_json, q.get("starterCode"), q.get("solutionCode"), pts, time_limit,
                         ),
                     )
                     inserted.append(qid)
 
-                # Update total
                 await cur.execute("SELECT COUNT(*) AS c FROM test_questions WHERE test_id = %s", (test_id,))
                 cnt = (await cur.fetchone())["c"]
                 await cur.execute("UPDATE global_tests SET total_questions = %s WHERE id = %s", (cnt, test_id))
@@ -498,6 +724,7 @@ async def add_questions(test_id: str, body: QuestionBatch):
 
 @router.delete("/global-tests/{test_id}/questions")
 async def delete_questions(test_id: str, section: Optional[str] = None):
+    """Delete questions from a test, optionally filtered by section."""
     pool = await get_pool()
     try:
         async with pool.acquire() as conn:
@@ -505,8 +732,7 @@ async def delete_questions(test_id: str, section: Optional[str] = None):
                 q = "DELETE FROM test_questions WHERE test_id = %s"
                 p: list = [test_id]
                 if section and section in SECTIONS:
-                    q += " AND section = %s"
-                    p.append(section)
+                    q += " AND section = %s"; p.append(section)
                 await cur.execute(q, p)
                 deleted = cur.rowcount
 
@@ -523,13 +749,13 @@ async def delete_questions(test_id: str, section: Optional[str] = None):
 
 @router.get("/global-tests/{test_id}/questions")
 async def get_questions(test_id: str, section: Optional[str] = None):
+    """List questions for a test, optionally filtered by section."""
     pool = await get_pool()
     try:
         q = "SELECT * FROM test_questions WHERE test_id = %s"
         p: list = [test_id]
         if section and section in SECTIONS:
-            q += " AND section = %s"
-            p.append(section)
+            q += " AND section = %s"; p.append(section)
         q += " ORDER BY section, question_id"
 
         async with pool.acquire() as conn:
@@ -539,20 +765,15 @@ async def get_questions(test_id: str, section: Optional[str] = None):
 
         return [
             {
-                "id": r["question_id"],
-                "testId": r["test_id"],
-                "section": r["section"],
-                "questionType": r.get("question_type"),
+                "id": r["question_id"], "testId": r["test_id"],
+                "section": r["section"], "questionType": r.get("question_type"),
                 "question": r["question"],
                 "options": [r["option_1"], r["option_2"], r["option_3"], r["option_4"]],
                 "correctAnswer": r["correct_answer"],
-                "explanation": r.get("explanation"),
-                "category": r.get("category"),
+                "explanation": r.get("explanation"), "category": r.get("category"),
                 "testCases": _safe_json(r.get("test_cases")),
-                "starterCode": r.get("starter_code"),
-                "solutionCode": r.get("solution_code"),
-                "points": r.get("points") or 1,
-                "timeLimit": r.get("time_limit"),
+                "starterCode": r.get("starter_code"), "solutionCode": r.get("solution_code"),
+                "points": r.get("points") or 1, "timeLimit": r.get("time_limit"),
             }
             for r in rows
         ]
@@ -562,28 +783,93 @@ async def get_questions(test_id: str, section: Optional[str] = None):
         raise HTTPException(500, str(e))
 
 
-# ─── Submit ────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+#  Submission & Grading
+# ═══════════════════════════════════════════════════════════════════
+
+async def _grade_question(q: dict, user_ans: str) -> dict:
+    """Grade a single question. Returns {isCorrect, pointsEarned, correctText}."""
+    qt = q.get("question_type", "mcq")
+    pts = q.get("points") or (10 if qt in ("coding", "sql") else 1)
+
+    if qt == "coding":
+        tc_raw = _safe_json(q.get("test_cases"))
+        lang = (tc_raw.get("language") if isinstance(tc_raw, dict) else None) or "Python"
+        cases = tc_raw if isinstance(tc_raw, list) else (tc_raw.get("cases", []) if isinstance(tc_raw, dict) else [])
+        result = await _run_coding_tests(user_ans, lang, cases)
+        pts_earned = pts if result["isCorrect"] else round((result["percentage"] / 100) * pts)
+        correct_text = f"{result['passedCount']}/{result['total']} test cases passed" if result["total"] else "N/A"
+        return {"isCorrect": result["isCorrect"], "pointsEarned": pts_earned, "correctText": correct_text}
+
+    if qt == "sql":
+        schema = q.get("starter_code") or ""
+        tc_raw = _safe_json(q.get("test_cases"))
+        exp_out = tc_raw.get("expectedOutput", "") if isinstance(tc_raw, dict) else ""
+        result = await _run_sql_and_compare(schema, user_ans, exp_out)
+        pts_earned = pts if result["isCorrect"] else 0
+        if result["isCorrect"]:
+            correct_text = f"Correct! Expected: {exp_out[:200]}"
+        else:
+            correct_text = f"Expected: {exp_out[:200]} | User Output: {(result.get('output') or 'Error')[:150]}"
+        return {"isCorrect": result["isCorrect"], "pointsEarned": pts_earned, "correctText": correct_text}
+
+    # MCQ
+    ca = q["correct_answer"]
+    options = [o for o in [q["option_1"], q["option_2"], q["option_3"], q["option_4"]] if o]
+    is_correct = False
+    if options:
+        try:
+            idx = int(ca)
+            is_correct = user_ans == ca or (idx < len(options) and user_ans == options[idx])
+        except (ValueError, IndexError):
+            is_correct = user_ans == ca
+    else:
+        is_correct = user_ans == ca
+    try:
+        correct_text = options[int(ca)] if options and int(ca) < len(options) else ca
+    except (ValueError, IndexError):
+        correct_text = ca
+    return {"isCorrect": is_correct, "pointsEarned": pts if is_correct else 0, "correctText": correct_text}
+
 
 @router.post("/global-tests/{test_id}/submit")
 async def submit_global_test(test_id: str, body: GlobalTestSubmit):
+    """Submit answers for a global test, auto-grade, and persist results."""
     if not body.studentId:
         raise HTTPException(400, "studentId required")
 
     pool = await get_pool()
 
+    # ── Validate test and eligibility ──
     async with pool.acquire() as conn:
         async with conn.cursor(pymysql.cursors.DictCursor) as cur:
             await cur.execute("SELECT * FROM global_tests WHERE id = %s", (test_id,))
             test = await cur.fetchone()
             if not test:
                 raise HTTPException(404, "Test not found")
+            if test.get("status") != "live":
+                raise HTTPException(400, "This test is not active")
+
+            now = datetime.utcnow()
+            if test.get("start_time") and now < test["start_time"]:
+                raise HTTPException(400, "This test has not started yet")
+            if test.get("deadline") and now > test["deadline"]:
+                raise HTTPException(400, "This test has ended")
+
+            await cur.execute(
+                "SELECT COUNT(*) AS c FROM global_test_submissions WHERE test_id = %s AND student_id = %s",
+                (test_id, body.studentId),
+            )
+            prior = (await cur.fetchone())["c"]
+            if prior >= (test.get("max_attempts") or 1):
+                raise HTTPException(400, "Maximum attempts reached for this test")
 
             await cur.execute("SELECT * FROM test_questions WHERE test_id = %s", (test_id,))
             questions = await cur.fetchall()
 
     answers = body.answers or {}
 
-    # Score per section
+    # ── Grade each question ──
     section_correct = {s: 0 for s in SECTIONS}
     section_total = {s: 0 for s in SECTIONS}
     section_pts_earned = {s: 0 for s in SECTIONS}
@@ -597,71 +883,26 @@ async def submit_global_test(test_id: str, body: GlobalTestSubmit):
     question_results: list[dict] = []
 
     for q in questions:
-        user_ans = str(answers.get(q["question_id"], "")).strip() if answers.get(q["question_id"]) is not None else ""
-        options = [q["option_1"], q["option_2"], q["option_3"], q["option_4"]]
-        options = [o for o in options if o]
-        is_correct = False
-        pts_earned = 0
-        correct_text = ""
-
-        qt = q.get("question_type", "mcq")
-        pts = q.get("points") or (10 if qt in ("coding", "sql") else 1)
-
-        if qt == "coding":
-            tc_raw = _safe_json(q.get("test_cases"))
-            lang = (tc_raw.get("language") if isinstance(tc_raw, dict) else None) or "Python"
-            cases = tc_raw if isinstance(tc_raw, list) else (tc_raw.get("cases", []) if isinstance(tc_raw, dict) else [])
-            result = await _run_inline_coding_tests(user_ans, lang, cases)
-            is_correct = result["isCorrect"]
-            pts_earned = pts if is_correct else round((result["percentage"] / 100) * pts)
-            correct_text = f"{result['passedCount']}/{result['total']} test cases passed" if result["total"] else "N/A"
-
-        elif qt == "sql":
-            schema = q.get("starter_code") or ""
-            tc_raw = _safe_json(q.get("test_cases"))
-            exp_out = ""
-            if isinstance(tc_raw, dict):
-                exp_out = tc_raw.get("expectedOutput", "")
-            result = await _run_sql_and_compare(schema, user_ans, exp_out)
-            is_correct = result["isCorrect"]
-            pts_earned = pts if is_correct else 0
-            if is_correct:
-                correct_text = f"Correct! Expected: {exp_out[:200]}"
-            else:
-                correct_text = f"Expected: {exp_out[:200]} | User Output: {(result.get('output') or 'Error')[:150]}"
-
-        else:  # mcq
-            ca = q["correct_answer"]
-            if options:
-                try:
-                    idx = int(ca)
-                    is_correct = user_ans == ca or (idx < len(options) and user_ans == options[idx])
-                except (ValueError, IndexError):
-                    is_correct = user_ans == ca
-            else:
-                is_correct = user_ans == ca
-            pts_earned = pts if is_correct else 0
-            try:
-                correct_text = options[int(ca)] if options and int(ca) < len(options) else ca
-            except (ValueError, IndexError):
-                correct_text = ca
+        raw_ans = answers.get(q["question_id"])
+        user_ans = str(raw_ans).strip() if raw_ans is not None else ""
+        grade = await _grade_question(q, user_ans)
 
         sec = q["section"]
-        if is_correct:
+        if grade["isCorrect"]:
             section_correct[sec] += 1
-        section_pts_earned[sec] += pts_earned
+        section_pts_earned[sec] += grade["pointsEarned"]
 
         question_results.append({
             "questionId": q["question_id"],
             "section": sec,
             "userAnswer": (user_ans[:500] + "..." if len(user_ans) > 500 else user_ans) if user_ans else "Not Answered",
-            "correctAnswer": correct_text,
-            "isCorrect": is_correct,
-            "pointsEarned": pts_earned,
+            "correctAnswer": grade["correctText"],
+            "isCorrect": grade["isCorrect"],
+            "pointsEarned": grade["pointsEarned"],
             "explanation": q.get("explanation"),
         })
 
-    # Compute section %
+    # ── Compute section scores ──
     section_scores = {}
     for s in SECTIONS:
         if section_total[s] > 0:
@@ -674,29 +915,50 @@ async def submit_global_test(test_id: str, body: GlobalTestSubmit):
 
     total_q = len(questions)
     total_correct = sum(1 for r in question_results if r["isCorrect"])
-    overall_pct = round((total_correct / total_q) * 100) if total_q else 0
-    total_score = sum(section_scores.values())
+    total_pts_possible = sum(section_pts_total.values())
+    total_pts_earned = sum(section_pts_earned.values())
+    overall_pct = round((total_pts_earned / total_pts_possible) * 100) if total_pts_possible else 0
     status = "passed" if overall_pct >= test["passing_score"] else "failed"
     sub_id = f"gts-{str(uuid.uuid4())[:12]}"
     submitted_at = datetime.utcnow()
 
-    # Persist
+    # ── Persist ──
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            submission_values = {
+                "id": sub_id, "test_id": test_id, "test_title": test["title"],
+                "student_id": body.studentId,
+                "aptitude_score": section_scores.get("aptitude", 0),
+                "verbal_score": section_scores.get("verbal", 0),
+                "logical_score": section_scores.get("logical", 0),
+                "coding_score": section_scores.get("coding", 0),
+                "sql_score": section_scores.get("sql", 0),
+                "total_score": overall_pct,
+                "overall_percentage": overall_pct,
+                "status": status,
+                "time_spent": body.timeSpent,
+                "tab_switches": body.tabSwitches,
+                "copy_paste_attempts": body.copyPasteAttempts,
+                "camera_blocked_count": body.cameraBlockedCount,
+                "phone_detection_count": body.phoneDetectionCount,
+                "face_missing_count": body.faceMissingCount,
+                "total_violations": body.totalViolations,
+                "multiple_monitor_count": body.multipleMonitorCount,
+                "proctoring_enabled": 1 if body.proctoringEnabled else 0,
+                "behavior_session_id": body.behaviorSessionId,
+                "submission_type": body.submissionType or "manual",
+                "termination_reason": body.terminationReason,
+                "submitted_at": submitted_at,
+            }
+
+            existing_columns = await _get_table_columns(cur, "global_test_submissions")
+            insert_columns = [c for c in submission_values.keys() if c in existing_columns]
+            insert_values = [submission_values[c] for c in insert_columns]
+            placeholders = ",".join(["%s"] * len(insert_columns))
+            columns_sql = ", ".join(insert_columns)
             await cur.execute(
-                """INSERT INTO global_test_submissions
-                   (id, test_id, test_title, student_id,
-                    aptitude_score, verbal_score, logical_score, coding_score, sql_score,
-                    total_score, overall_percentage, status, time_spent, tab_switches, submitted_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (
-                    sub_id, test_id, test["title"], body.studentId,
-                    section_scores.get("aptitude", 0), section_scores.get("verbal", 0),
-                    section_scores.get("logical", 0), section_scores.get("coding", 0),
-                    section_scores.get("sql", 0),
-                    total_score, overall_pct, status,
-                    body.timeSpent, body.tabSwitches, submitted_at,
-                ),
+                f"INSERT INTO global_test_submissions ({columns_sql}) VALUES ({placeholders})",
+                insert_values,
             )
 
             for sr in SECTIONS:
@@ -734,22 +996,58 @@ async def submit_global_test(test_id: str, body: GlobalTestSubmit):
 
     return {
         "submission": {
-            "id": sub_id,
-            "score": overall_pct,
-            "totalScore": total_score,
-            "status": status,
-            "sectionScores": section_scores,
-            "correctCount": total_correct,
-            "totalQuestions": total_q,
-            "tabSwitches": body.tabSwitches,
-            "timeSpent": body.timeSpent,
+            "id": sub_id, "score": overall_pct, "totalScore": overall_pct,
+            "status": status, "sectionScores": section_scores,
+            "correctCount": total_correct, "totalQuestions": total_q,
+            "tabSwitches": body.tabSwitches, "timeSpent": body.timeSpent,
+            "copyPasteAttempts": body.copyPasteAttempts,
+            "cameraBlockedCount": body.cameraBlockedCount,
+            "phoneDetectionCount": body.phoneDetectionCount,
+            "faceMissingCount": body.faceMissingCount,
+            "totalViolations": body.totalViolations,
+            "multipleMonitorCount": body.multipleMonitorCount,
+            "proctoringEnabled": bool(body.proctoringEnabled),
+            "behaviorSessionId": body.behaviorSessionId,
+            "submissionType": body.submissionType or "manual",
+            "terminationReason": body.terminationReason,
             "questionResults": question_results,
         },
         "message": "Congratulations! You passed the test!" if status == "passed" else "Keep practicing!",
     }
 
 
-# ─── Submission listing ───────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+#  Submission Listing
+# ═══════════════════════════════════════════════════════════════════
+
+def _format_submission(s: dict) -> dict:
+    """Standard formatter for a submission row."""
+    return {
+        "id": s["id"], "testId": s["test_id"], "testTitle": s["test_title"],
+        "studentId": s["student_id"], "studentName": s.get("student_name", ""),
+        "aptitudeScore": s.get("aptitude_score"),
+        "verbalScore": s.get("verbal_score"),
+        "logicalScore": s.get("logical_score"),
+        "codingScore": s.get("coding_score"),
+        "sqlScore": s.get("sql_score"),
+        "totalScore": s.get("total_score"),
+        "overallPercentage": float(s.get("overall_percentage") or 0),
+        "status": s["status"],
+        "timeSpent": s.get("time_spent"),
+        "tabSwitches": s.get("tab_switches"),
+        "copyPasteAttempts": s.get("copy_paste_attempts") or 0,
+        "cameraBlockedCount": s.get("camera_blocked_count") or 0,
+        "phoneDetectionCount": s.get("phone_detection_count") or 0,
+        "faceMissingCount": s.get("face_missing_count") or 0,
+        "totalViolations": s.get("total_violations") or 0,
+        "multipleMonitorCount": s.get("multiple_monitor_count") or 0,
+        "proctoringEnabled": bool(s.get("proctoring_enabled")) if s.get("proctoring_enabled") is not None else None,
+        "behaviorSessionId": s.get("behavior_session_id"),
+        "submissionType": s.get("submission_type"),
+        "terminationReason": s.get("termination_reason"),
+        "submittedAt": str(s.get("submitted_at", "")),
+    }
+
 
 @router.get("/global-test-submissions")
 async def list_global_submissions(
@@ -757,6 +1055,7 @@ async def list_global_submissions(
     studentId: Optional[str] = None,
     mentorId: Optional[str] = None,
 ):
+    """List submissions with optional filters."""
     pool = await get_pool()
     query = """SELECT s.*, u.name AS student_name
                FROM global_test_submissions s
@@ -775,27 +1074,7 @@ async def list_global_submissions(
             async with conn.cursor(pymysql.cursors.DictCursor) as cur:
                 await cur.execute(query, params)
                 rows = await cur.fetchall()
-        return [
-            {
-                "id": s["id"],
-                "testId": s["test_id"],
-                "testTitle": s["test_title"],
-                "studentId": s["student_id"],
-                "studentName": s["student_name"],
-                "aptitudeScore": s.get("aptitude_score"),
-                "verbalScore": s.get("verbal_score"),
-                "logicalScore": s.get("logical_score"),
-                "codingScore": s.get("coding_score"),
-                "sqlScore": s.get("sql_score"),
-                "totalScore": s.get("total_score"),
-                "overallPercentage": float(s.get("overall_percentage") or 0),
-                "status": s["status"],
-                "timeSpent": s.get("time_spent"),
-                "tabSwitches": s.get("tab_switches"),
-                "submittedAt": str(s.get("submitted_at", "")),
-            }
-            for s in rows
-        ]
+        return [_format_submission(s) for s in rows]
     except Exception as e:
         if "doesn't exist" in str(e):
             raise HTTPException(503, "Global tests not set up.")
@@ -804,6 +1083,7 @@ async def list_global_submissions(
 
 @router.get("/global-test-submissions/{submission_id}")
 async def get_global_submission(submission_id: str):
+    """Get a single submission with question and section results."""
     pool = await get_pool()
     try:
         async with pool.acquire() as conn:
@@ -817,51 +1097,29 @@ async def get_global_submission(submission_id: str):
                 s = await cur.fetchone()
                 if not s:
                     raise HTTPException(404, "Submission not found")
-
                 await cur.execute("SELECT * FROM question_results WHERE submission_id = %s", (submission_id,))
                 qr = await cur.fetchall()
                 await cur.execute("SELECT * FROM section_results WHERE submission_id = %s", (submission_id,))
                 sec = await cur.fetchall()
 
-        return {
-            "id": s["id"],
-            "testId": s["test_id"],
-            "testTitle": s["test_title"],
-            "studentId": s["student_id"],
-            "studentName": s["student_name"],
-            "aptitudeScore": s.get("aptitude_score"),
-            "verbalScore": s.get("verbal_score"),
-            "logicalScore": s.get("logical_score"),
-            "codingScore": s.get("coding_score"),
-            "sqlScore": s.get("sql_score"),
-            "totalScore": s.get("total_score"),
-            "overallPercentage": float(s.get("overall_percentage") or 0),
-            "status": s["status"],
-            "timeSpent": s.get("time_spent"),
-            "tabSwitches": s.get("tab_switches"),
-            "submittedAt": str(s.get("submitted_at", "")),
-            "questionResults": [
-                {
-                    "questionId": r["question_id"],
-                    "section": r["section"],
-                    "userAnswer": r["user_answer"],
-                    "correctAnswer": r["correct_answer"],
-                    "isCorrect": bool(r["is_correct"]),
-                    "explanation": r.get("explanation"),
-                }
-                for r in qr
-            ],
-            "sectionResults": [
-                {
-                    "section": r["section"],
-                    "correctCount": r["correct_count"],
-                    "totalQuestions": r["total_questions"],
-                    "score": r["score"],
-                    "percentage": float(r.get("percentage") or 0),
-                }
-                for r in sec
-            ],
-        }
+        result = _format_submission(s)
+        result["questionResults"] = [
+            {
+                "questionId": r["question_id"], "section": r["section"],
+                "userAnswer": r["user_answer"], "correctAnswer": r["correct_answer"],
+                "isCorrect": bool(r["is_correct"]), "explanation": r.get("explanation"),
+            }
+            for r in qr
+        ]
+        result["sectionResults"] = [
+            {
+                "section": r["section"], "correctCount": r["correct_count"],
+                "totalQuestions": r["total_questions"], "score": r["score"],
+                "percentage": float(r.get("percentage") or 0),
+            }
+            for r in sec
+        ]
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -870,10 +1128,13 @@ async def get_global_submission(submission_id: str):
         raise HTTPException(500, str(e))
 
 
-# ─── Personalized report ──────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+#  Personalised AI Report
+# ═══════════════════════════════════════════════════════════════════
 
 @router.get("/global-test-submissions/{submission_id}/report")
 async def get_submission_report(submission_id: str):
+    """Generate (or return cached) AI-powered personalised report."""
     pool = await get_pool()
     try:
         async with pool.acquire() as conn:
@@ -895,6 +1156,7 @@ async def get_submission_report(submission_id: str):
                 await cur.execute("SELECT * FROM question_results WHERE submission_id = %s", (submission_id,))
                 qr_rows = await cur.fetchall()
 
+        # Build section results dict
         section_results: dict = {}
         for r in sec_rows:
             section_results[r["section"]] = {
@@ -909,12 +1171,15 @@ async def get_submission_report(submission_id: str):
             if r["section"] in by_section:
                 by_section[r["section"]].append(r)
 
-        # Check cached report
+        # Check if a valid cached report exists
         existing_data = None
         needs_regen = False
         if existing:
             existing_data = _safe_json(existing[0].get("report_data"))
-            if existing_data and (not existing_data.get("questionInsights") or "Q1" not in existing_data.get("questionInsights", {})):
+            if existing_data and (
+                not existing_data.get("questionInsights")
+                or "Q1" not in existing_data.get("questionInsights", {})
+            ):
                 needs_regen = True
 
         if existing_data and not needs_regen:
@@ -971,7 +1236,7 @@ For CORRECT coding/SQL suggest optimizations. For INCORRECT diagnose the logic g
                 content = ai_resp.get("choices", [{}])[0].get("message", {}).get("content", "{}")
                 ai_analysis = json.loads(content)
 
-                # Save
+                # Persist
                 async with pool.acquire() as conn:
                     async with conn.cursor() as cur:
                         if needs_regen:
