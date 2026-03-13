@@ -51,6 +51,12 @@ const riskIcons = {
     terminate: <XCircle size={16} />,
 }
 
+// Format session ID as: user@email.com (last4) for admin readability
+const formatSessionId = (session_id, user_id) => {
+    const last4 = (session_id || '').slice(-4)
+    return user_id ? `${user_id} (${last4})` : (session_id || '').slice(-12)
+}
+
 function RiskBadge({ level }) {
     const color = riskColors[level] || '#6b7280'
     const label = riskLabels[level] || level
@@ -331,7 +337,7 @@ export default function ProctorAgentDashboard() {
                             borderTop: i > 0 ? '1px solid #334155' : 'none', fontSize: '0.78rem'
                         }}>
                             <RiskBadge level={a.risk_level} />
-                            <span style={{ color: '#e2e8f0', fontFamily: 'monospace', fontSize: '0.72rem' }}>{a.session_id?.slice(0, 16)}</span>
+                            <span style={{ color: '#e2e8f0', fontFamily: 'monospace', fontSize: '0.72rem' }}>{formatSessionId(a.session_id, a.user_id)}</span>
                             <span style={{ color: '#94a3b8' }}>Score: <b style={{ color: a.fraud_score >= 60 ? '#ef4444' : '#f59e0b' }}>{a.fraud_score}</b></span>
                             <span style={{ color: '#64748b', fontSize: '0.7rem' }}>{a.recommended_action}</span>
                             {(a.risk_level === 'terminate' || a.risk_level === 'critical' || a.recommended_action?.toLowerCase().includes('terminate')) && (
@@ -459,7 +465,7 @@ function DashboardTab({ dashboard, analyses, onViewAnalysis, onTerminate }) {
                                 {recent_flagged.map(r => (
                                     <tr key={r.id} style={{ borderBottom: '1px solid #1e293b22' }}>
                                         <td style={{ padding: '8px 10px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                            {r.session_id?.slice(0, 12)}...
+                                            {formatSessionId(r.session_id, r.user_id)}
                                         </td>
                                         <td style={{ padding: '8px 10px', color: '#94a3b8' }}>{r.user_id || '—'}</td>
                                         <td style={{ padding: '8px 10px', color: '#94a3b8' }}>{r.exam_title || '—'}</td>
@@ -510,7 +516,7 @@ function DashboardTab({ dashboard, analyses, onViewAnalysis, onTerminate }) {
                                     <tr key={a.id} style={{ borderBottom: '1px solid #1e293b22' }}>
                                         <td style={{ padding: '8px 10px', color: '#64748b' }}>{a.id}</td>
                                         <td style={{ padding: '8px 10px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                            {a.session_id?.slice(0, 12)}...
+                                            {formatSessionId(a.session_id, a.user_id)}
                                         </td>
                                         <td style={{ padding: '8px 10px', color: '#94a3b8', textTransform: 'capitalize' }}>{a.source}</td>
                                         <td style={{ padding: '8px 10px', color: '#94a3b8' }}>{a.user_id || '—'}</td>
@@ -638,7 +644,7 @@ function BatchTab({ ids, setIds, source, setSource, onRun, results, loading, onV
                                 {(results.analyses || []).map(a => (
                                     <tr key={a.session_id || a.error} style={{ borderBottom: '1px solid #1e293b22' }}>
                                         <td style={{ padding: '8px 10px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                                            {a.session_id?.slice(0, 16)}
+                                            {formatSessionId(a.session_id, a.user_id)}
                                         </td>
                                         <td style={{ padding: '8px 10px' }}>
                                             {a.error ? <span style={{ color: '#ef4444' }}>Error</span> : <FraudScoreBar score={a.fraud_score} />}

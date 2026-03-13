@@ -62,6 +62,8 @@ async def analyze_session(req: AnalyzeRequest):
     """Trigger the agent to analyze a single exam session.
 
     Returns fraud score, detected patterns, AI reasoning, and recommended action.
+    If the AI recommends 'terminate', automatically sends a socket terminate signal
+    to the student's session and alerts admins — no manual admin action required.
     """
     try:
         result = await agent_analyze_session(
@@ -73,6 +75,41 @@ async def analyze_session(req: AnalyzeRequest):
         # Persist the analysis
         row_id = await save_analysis({**result, "source": req.source})
         result["analysis_id"] = row_id
+
+        # ── Auto-terminate: if AI recommends terminate, emit socket events immediately ──
+        if result.get("recommended_action") == "terminate":
+            try:
+                from main import sio
+                ai = result.get("ai_analysis", {})
+                evidence = ai.get("evidence_summary", "") or ", ".join(ai.get("key_findings", [])[:2])
+                terminate_payload = {
+                    "session_id": req.session_id,
+                    "reason": f"Auto-terminated by Proctoring Agent: fraud_score={result.get('fraud_score')}/100. {evidence}",
+                    "fraud_score": result.get("fraud_score"),
+                    "risk_level": "terminate",
+                    "key_findings": ai.get("key_findings", []),
+                    "manual": False,
+                    "auto_terminated": True,
+                }
+                # Notify student to end their session
+                await sio.emit("agent_terminate", terminate_payload, room=f"session_{req.session_id}")
+                if req.user_id:
+                    await sio.emit("agent_terminate", terminate_payload, room=f"student_{req.user_id}")
+                # Alert all admins
+                await sio.emit("agent_alert", {
+                    "type": "auto_terminate",
+                    "session_id": req.session_id,
+                    "user_id": req.user_id,
+                    "risk_level": "terminate",
+                    "recommended_action": "terminate",
+                    "fraud_score": result.get("fraud_score"),
+                    "reason": "Auto-terminated by Proctoring Intelligence Agent",
+                }, room="admin_room")
+                result["auto_terminated"] = True
+            except Exception as te:
+                print(f"[ProctorAgent] Auto-terminate emit failed: {te}")
+                result["auto_terminated"] = False
+
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent analysis failed: {str(e)}")

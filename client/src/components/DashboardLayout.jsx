@@ -5,7 +5,7 @@ import { Sun, Moon, LogOut, Menu, X, Brain, User, Globe, Wifi, WifiOff, ChevronD
 import { useState, useEffect } from 'react'
 import './DashboardLayout.css'
 
-function DashboardLayout({ children, navItems, title, subtitle, mentorInfo }) {
+function DashboardLayout({ children, navItems, title, subtitle }) {
     const { user, logout } = useAuth()
     const { theme, toggleTheme } = useTheme()
     const { t, locale, setLocale, languages } = useI18n()
