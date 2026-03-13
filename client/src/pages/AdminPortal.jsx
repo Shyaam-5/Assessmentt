@@ -2879,6 +2879,18 @@ function GlobalTestsAdmin() {
         enforceFullscreen: true,
         autoSubmitOnViolation: false
     })
+
+    const defaultProctoringSettings = {
+        enabled: true,
+        trackTabSwitches: true,
+        maxTabSwitches: 3,
+        enableVideoAudio: true,
+        disableCopyPaste: true,
+        detectCameraBlocking: true,
+        detectPhoneUsage: true,
+        enforceFullscreen: true,
+        autoSubmitOnViolation: false
+    }
     // AI Generation for Coding/SQL
     const [codingAiPrompt, setCodingAiPrompt] = useState({ topic: '', difficulty: 'Medium', language: 'Python' })
     const [sqlAiPrompt, setSqlAiPrompt] = useState({ topic: '', difficulty: 'Medium' })
@@ -3208,6 +3220,7 @@ function GlobalTestsAdmin() {
                 description: '', startTime: '', deadline: '', maxAttempts: 1, maxTabSwitches: 3, status: 'live',
                 sectionConfig: newTest.sectionConfig
             })
+            setProctoringSettings(defaultProctoringSettings)
             fetchTests()
         } catch (e) {
             alert(e.response?.data?.error || 'Failed to save test')
@@ -3271,6 +3284,18 @@ function GlobalTestsAdmin() {
                 if (bySection[q.section]) bySection[q.section].push(item)
             })
             setEnableProctoring((t.maxTabSwitches ?? 0) > 0)
+            const savedProctoring = t.proctoring || {}
+            setProctoringSettings({
+                enabled: savedProctoring.enabled ?? false,
+                trackTabSwitches: savedProctoring.trackTabSwitches ?? false,
+                maxTabSwitches: savedProctoring.maxTabSwitches ?? (t.maxTabSwitches ?? 3),
+                enableVideoAudio: savedProctoring.enableVideoAudio ?? false,
+                disableCopyPaste: savedProctoring.disableCopyPaste ?? false,
+                detectCameraBlocking: savedProctoring.detectCameraBlocking ?? false,
+                detectPhoneUsage: savedProctoring.detectPhoneUsage ?? false,
+                enforceFullscreen: savedProctoring.enforceFullscreen ?? false,
+                autoSubmitOnViolation: savedProctoring.autoSubmitOnViolation ?? false
+            })
             setNewTest({
                 title: t.title,
                 type: t.type || 'comprehensive',
@@ -3413,7 +3438,7 @@ function GlobalTestsAdmin() {
                         </button>
                         <button
                             type="button"
-                            onClick={() => { setShowModal(true); setModalStep(1); setEditingId(null); setQuestionsBySection({ aptitude: [], verbal: [], logical: [], coding: [], sql: [] }); setGeneratedQuestions([]); setAiPrompt({ topic: '', difficulty: 'Medium', count: 5 }); }}
+                            onClick={() => { setShowModal(true); setModalStep(1); setEditingId(null); setQuestionsBySection({ aptitude: [], verbal: [], logical: [], coding: [], sql: [] }); setGeneratedQuestions([]); setAiPrompt({ topic: '', difficulty: 'Medium', count: 5 }); setProctoringSettings(defaultProctoringSettings); }}
                             className="btn-create-new premium-btn"
                             style={{ padding: '0.75rem 1.25rem', background: 'var(--primary)', borderRadius: '1rem', fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}
                         >
