@@ -23,6 +23,12 @@ import axios from 'axios'
 
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3000') + '/api'
 
+// Format session ID as: user@email.com (last4) for admin readability
+const formatSessionId = (session_id, user_id) => {
+    const last4 = (session_id || '').slice(-4)
+    return user_id ? `${user_id} (${last4})` : (session_id || '').slice(-12)
+}
+
 
 // ═══════════════════════════════════════════════════════════════
 //  Colour & style helpers
@@ -459,7 +465,7 @@ function DashboardTab({ dashboard, analyses, onViewDetail, onRefresh }) {
                                 onMouseLeave={e => e.currentTarget.style.background = '#1e293b'}
                             >
                                 <div>
-                                    <span style={{ color: '#e2e8f0', fontSize: '0.85rem', fontWeight: 500 }}>{s.user_id || s.session_id}</span>
+                                    <span style={{ color: '#e2e8f0', fontSize: '0.85rem', fontWeight: 500 }}>{formatSessionId(s.session_id, s.user_id)}</span>
                                     {s.exam_title && <span style={{ color: '#64748b', fontSize: '0.75rem', marginLeft: 8 }}>{s.exam_title}</span>}
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -487,7 +493,7 @@ function DashboardTab({ dashboard, analyses, onViewDetail, onRefresh }) {
                                 borderRadius: 6, cursor: 'pointer',
                             }}>
                                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                                    <span style={{ fontSize: '0.8rem', color: '#94a3b8', fontFamily: 'monospace' }}>{(a.session_id || '').slice(0, 20)}...</span>
+                                    <span style={{ fontSize: '0.8rem', color: '#94a3b8', fontFamily: 'monospace' }}>{formatSessionId(a.session_id, a.user_id)}</span>
                                     <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{a.user_id}</span>
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

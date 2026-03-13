@@ -39,21 +39,8 @@ function StudentPortal() {
     const location = useLocation()
     const [title, setTitle] = useState('')
     const [subtitle, setSubtitle] = useState('')
-    const [mentorInfo, setMentorInfo] = useState(null)
 
 
-    // Fetch mentor info once
-    useEffect(() => {
-        if (user?.id) {
-            axios.get(`${API_BASE}/analytics/student/${user.id}`)
-                .then(res => {
-                    if (res.data.mentorInfo) {
-                        setMentorInfo(res.data.mentorInfo)
-                    }
-                })
-                .catch(err => console.error('Error fetching mentor info:', err))
-        }
-    }, [user?.id])
 
     useEffect(() => {
         const path = location.pathname.split('/').pop()
@@ -124,7 +111,7 @@ function StudentPortal() {
     ]
 
     return (
-        <DashboardLayout navItems={navItems} title={title} subtitle={subtitle} mentorInfo={mentorInfo}>
+        <DashboardLayout navItems={navItems} title={title} subtitle={subtitle}>
             <Routes>
                 <Route path="/" element={<Dashboard user={user} />} />
                 <Route path="/assignments" element={<Assignments user={user} />} />
