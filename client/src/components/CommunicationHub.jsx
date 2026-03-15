@@ -33,6 +33,8 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
     const [phoneDetectionCount, setPhoneDetectionCount] = useState(0)
     const [multiplePeople, setMultiplePeople] = useState(false)
     const [multiplePeopleCount, setMultiplePeopleCount] = useState(0)
+    const [noFaceCount, setNoFaceCount] = useState(0)
+    const [multipleFaceCount, setMultipleFaceCount] = useState(0)
     const [multipleMonitors, setMultipleMonitors] = useState(false)
     const [multipleMonitorCount, setMultipleMonitorCount] = useState(0)
     const [violationWarning, setViolationWarning] = useState(null)
@@ -48,10 +50,14 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
     const cameraCheckRef = useRef(null)
     const cameraBlockedRef = useRef(false)
     const modelRef = useRef(null)
+    const faceModelRef = useRef(null)
     const aiMonitorRef = useRef(null)
     const monitorCheckRef = useRef(null)
     const phoneCooldownRef = useRef(0)
     const peopleCooldownRef = useRef(0)
+    const faceCooldownRef = useRef(0)
+    const noFaceStreakRef = useRef(0)
+    const faceMultiStreakRef = useRef(0)
     const warningTimerRef = useRef(null)
     const onAutoTerminateRef = useRef(onAutoTerminate)
     useEffect(() => { onAutoTerminateRef.current = onAutoTerminate }, [onAutoTerminate])
@@ -95,27 +101,24 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
         let cancelled = false
         const loadModel = async () => {
             try {
-                const waitForCocoSsd = () => new Promise((resolve) => {
-                    if (window.cocoSsd) return resolve()
-                    let elapsed = 0
+                const waitForModels = () => new Promise((resolve) => {
                     const check = setInterval(() => {
-                        elapsed += 200
-                        if (window.cocoSsd) { clearInterval(check); resolve() }
-                        else if (elapsed > 30000) { clearInterval(check); resolve() }
+                        if (window.cocoSsd && window.blazeface) { clearInterval(check); resolve() }
                     }, 200)
+                    setTimeout(() => { clearInterval(check); resolve() }, 30000)
                 })
-                await waitForCocoSsd()
-                if (!window.cocoSsd || cancelled) return
-                const m = await window.cocoSsd.load({ base: 'mobilenet_v2' })
+                await waitForModels()
                 if (cancelled) return
-                modelRef.current = m
+                
+                if (window.cocoSsd) {
+                    modelRef.current = await window.cocoSsd.load({ base: 'mobilenet_v2' })
+                }
+                if (window.blazeface) {
+                    faceModelRef.current = await window.blazeface.load()
+                }
+
                 setModelLoaded(true)
-                console.log('✅ AI Proctoring Model loaded (strict mode)')
-                try {
-                    const warmup = document.createElement('canvas')
-                    warmup.width = 64; warmup.height = 64
-                    await m.detect(warmup)
-                } catch {}
+                console.log('✅ AI Proctoring Models (COCO + BlazeFace) loaded')
             } catch (e) { console.error('AI model load error:', e) }
         }
         loadModel()
@@ -135,21 +138,9 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
                 })
             }
         }
-        const handleBlur = () => {
-            if (!document.hidden) {
-                setTabSwitchCount(prev => {
-                    const nc = prev + 1
-                    logViolation('window_blur', nc >= 2 ? 'high' : 'medium', `Window blur #${nc}`)
-                    showWarning('🚫 Window Focus Lost!', `You moved focus away from the test window. Violation ${nc} recorded.`, 'high')
-                    return nc
-                })
-            }
-        }
         document.addEventListener('visibilitychange', handleVisibility)
-        window.addEventListener('blur', handleBlur)
         return () => {
             document.removeEventListener('visibilitychange', handleVisibility)
-            window.removeEventListener('blur', handleBlur)
         }
     }, [active, logViolation, showWarning])
 
@@ -371,6 +362,42 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
                             noPersonStreakRef.current = 0
                         }
                     }
+
+                    // BlazeFace - Face Missing & Multi Face
+                    if (cfg.multiple_people_detect && faceModelRef.current) {
+                        const faces = await faceModelRef.current.estimateFaces(vid, false)
+                        const now = Date.now()
+
+                        if (faces.length === 0) {
+                            noFaceStreakRef.current++
+                            if (noFaceStreakRef.current >= 6) { // ~2.4s
+                                if (now - faceCooldownRef.current > 6000) {
+                                    faceCooldownRef.current = now
+                                    logViolation('no_face', 'high', 'No face detected via BlazeFace')
+                                    setNoFaceCount(prev => prev + 1)
+                                    showWarning('👤 No Face Detected!', 'Please ensure your face is clearly visible to the camera.', 'high')
+                                }
+                                noFaceStreakRef.current = 0
+                            }
+                        } else {
+                            noFaceStreakRef.current = 0
+                        }
+
+                        if (faces.length > 1) {
+                            faceMultiStreakRef.current++
+                            if (faceMultiStreakRef.current >= 3) {
+                                if (now - faceCooldownRef.current > 6000) {
+                                    faceCooldownRef.current = now
+                                    logViolation('multiple_faces', 'critical', `${faces.length} faces detected`)
+                                    setMultipleFaceCount(prev => prev + 1)
+                                    showWarning('👥 Multi-Face Detected', 'Multiple faces detected in frame. Cheating is strictly prohibited.', 'critical')
+                                }
+                                faceMultiStreakRef.current = 0
+                            }
+                        } else {
+                            faceMultiStreakRef.current = 0
+                        }
+                    }
                 } catch (err) {
                     console.warn('AI detection frame error:', err)
                 }
@@ -518,6 +545,7 @@ function useProctoring(userId, sessionId, active = true, config = DEFAULT_PROCTO
         videoRef, canvasRef, logViolation, enterFullscreen,
         modelLoaded, phoneDetected, phoneDetectionCount,
         multiplePeople, multiplePeopleCount,
+        noFaceCount, multipleFaceCount,
         multipleMonitors, multipleMonitorCount,
         violationWarning,
         // Strict mode
@@ -535,6 +563,7 @@ function ProctoringBar({ proctoring }) {
         isFullscreen, fullscreenExitCount, videoRef, canvasRef, enterFullscreen,
         modelLoaded, phoneDetected, phoneDetectionCount,
         multiplePeople, multiplePeopleCount,
+        noFaceCount, multipleFaceCount,
         multipleMonitors, multipleMonitorCount,
         violationWarning, autoTerminated, totalViolations, agentTerminateReason } = proctoring
 
@@ -673,6 +702,8 @@ function ProctoringBar({ proctoring }) {
                         {cameraBlockedCount > 0 && <span style={{ color: '#ef4444' }}>Blk:{cameraBlockedCount}</span>}
                         {phoneDetectionCount > 0 && <span style={{ color: '#ef4444' }}>📱{phoneDetectionCount}</span>}
                         {multiplePeopleCount > 0 && <span style={{ color: '#ef4444' }}>👥{multiplePeopleCount}</span>}
+                        {noFaceCount > 0 && <span style={{ color: '#ef4444' }}>👤{noFaceCount}</span>}
+                        {multipleFaceCount > 0 && <span style={{ color: '#ef4444' }}>👨‍👩‍👧{multipleFaceCount}</span>}
                         {multipleMonitorCount > 0 && <span style={{ color: '#ef4444' }}>🖥{multipleMonitorCount}</span>}
                     </div>
                 </div>

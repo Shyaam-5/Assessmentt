@@ -55,6 +55,7 @@ EVENT_RISK = {
     "multiple_monitors":    7,
     # Aliases for frontend event names
     "face_not_detected":    6,
+    "no_face":              6,
     "multiple_faces":       9,
     "face_lookaway":        5,
     "window_switch":        4,
@@ -131,10 +132,14 @@ THRESHOLD_TERMINATE = 65
 
 async def tool_get_event_timeline(session_id: str, source: str = "comm") -> list[dict]:
     """Fetch all proctoring events for a session, ordered by time."""
-    if source not in ("comm", "skill"):
-        raise ValueError(f"Invalid source: {source}. Must be 'comm' or 'skill'.")
-    table = "comm_proctoring_logs" if source == "comm" else "skill_proctoring_logs"
-    id_col = "session_id" if source == "comm" else "attempt_id"
+    if source not in ("comm", "skill", "global"):
+        raise ValueError(f"Invalid source: {source}. Must be 'comm', 'skill', or 'global'.")
+    table_map = {
+        "comm": ("comm_proctoring_logs", "session_id"),
+        "skill": ("skill_proctoring_logs", "attempt_id"),
+        "global": ("global_proctoring_logs", "session_id"),
+    }
+    table, id_col = table_map[source]
 
     pool = await get_pool()
     async with pool.acquire() as conn:

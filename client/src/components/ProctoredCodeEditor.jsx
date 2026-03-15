@@ -266,7 +266,7 @@ function ProctoredCodeEditor({ problem, user, onClose, onSubmitSuccess }) {
         const count = totalViolationsRef.current
         setTotalViolations(count)
         // Log to backend for Proctor Intelligence Agent analysis
-        axios.post(`${API_BASE}/proctoring/log`, {
+        axios.post(`${API_BASE}/communication/proctoring/log`, {
             userId: user.id,
             sessionId: behaviorSessionId.current,
             eventType,

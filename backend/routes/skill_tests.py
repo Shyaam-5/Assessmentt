@@ -697,9 +697,9 @@ async def _maybe_trigger_skill_agent(attempt_id: str, severity: str, user_id: st
 @router.post("/proctoring/log")
 async def proctoring_log(body: dict = Body(...)):
     attempt_id = body.get("attemptId")
-    event_type = body.get("event_type", "unknown")
+    event_type = body.get("eventType") or body.get("event_type", "unknown")
     severity = body.get("severity", "low")
-    user_id = str(body.get("userId", body.get("user_id", "")))
+    user_id = str(body.get("userId") or body.get("user_id", ""))
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:

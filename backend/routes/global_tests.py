@@ -32,6 +32,39 @@ PISTON_URL = "https://emkc.org/api/v2/piston/execute"
 SECTIONS = ["aptitude", "verbal", "logical", "coding", "sql"]
 PROCTORING_MODES = ("standard", "enhanced", "ai_proctored")
 
+# ── Global Proctoring Logs Table ──────────────────────────────────
+
+_GLOBAL_PROCTORING_SQL = """
+CREATE TABLE IF NOT EXISTS global_proctoring_logs (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    session_id  VARCHAR(100) NOT NULL,
+    user_id     VARCHAR(50),
+    test_id     VARCHAR(100),
+    event_type  VARCHAR(50)  NOT NULL,
+    severity    VARCHAR(20)  DEFAULT 'medium',
+    details     JSON,
+    created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_session (session_id),
+    INDEX idx_user (user_id),
+    INDEX idx_test (test_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+_global_proctor_table_ready = False
+
+
+async def _ensure_global_proctoring_table():
+    global _global_proctor_table_ready
+    if _global_proctor_table_ready:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_GLOBAL_PROCTORING_SQL)
+        await conn.commit()
+    _global_proctor_table_ready = True
+
+
 LANGUAGE_MAP = {
     "Python":     {"language": "python",     "version": "3.10.0"},
     "JavaScript": {"language": "javascript", "version": "18.15.0"},
@@ -784,6 +817,45 @@ async def get_questions(test_id: str, section: Optional[str] = None):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Proctoring Event Logging
+# ═══════════════════════════════════════════════════════════════════
+
+@router.post("/global-tests/{test_id}/log-proctoring")
+async def log_proctoring_event(test_id: str, body: dict):
+    """Log a single proctoring event for a global test session.
+
+    Body: { sessionId, userId, eventType, severity?, details? }
+    """
+    session_id = body.get("sessionId") or body.get("session_id", "")
+    user_id = body.get("userId") or body.get("user_id", "")
+    event_type = body.get("eventType") or body.get("event_type", "unknown")
+    severity = body.get("severity", "medium")
+    details = body.get("details")
+
+    if not session_id or not event_type:
+        raise HTTPException(400, "sessionId and eventType are required")
+
+    await _ensure_global_proctoring_table()
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO global_proctoring_logs "
+                    "(session_id, user_id, test_id, event_type, severity, details) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    (
+                        session_id, user_id, test_id, event_type, severity,
+                        json.dumps(details) if details else None,
+                    ),
+                )
+            await conn.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to log proctoring event: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Submission & Grading
 # ═══════════════════════════════════════════════════════════════════
 
@@ -993,6 +1065,19 @@ async def submit_global_test(test_id: str, body: GlobalTestSubmit):
                 )
 
         await conn.commit()
+
+    # ── Trigger proctor agent analysis for AI-proctored sessions ──
+    proctoring_cfg = _safe_json(test.get("proctoring_config")) or {}
+    if _resolve_proctoring_mode(proctoring_cfg) == "ai_proctored" and body.behaviorSessionId:
+        try:
+            from services.proctor_agent import agent_analyze_session, save_analysis
+            analysis = await agent_analyze_session(
+                body.behaviorSessionId, "global",
+                user_id=body.studentId, exam_title=test.get("title", ""),
+            )
+            await save_analysis({**analysis, "source": "global"})
+        except Exception as agent_err:
+            print(f"[GlobalTest] Post-submit proctor analysis failed: {agent_err}")
 
     return {
         "submission": {

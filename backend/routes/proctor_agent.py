@@ -30,19 +30,19 @@ router = APIRouter(prefix="/api/proctor-agent", tags=["proctor-agent"])
 
 class AnalyzeRequest(BaseModel):
     session_id: str
-    source: str = "comm"          # "comm" | "skill"
+    source: str = "comm"          # "comm" | "skill" | "global"
     user_id: str = ""
     exam_title: str = ""
 
 
 class BatchAnalyzeRequest(BaseModel):
     session_ids: list[str]
-    source: str = "comm"
+    source: str = "comm"          # "comm" | "skill" | "global"
 
 
 class ReportRequest(BaseModel):
     session_id: str
-    source: str = "comm"
+    source: str = "comm"          # "comm" | "skill" | "global"
     user_id: str = ""
     exam_title: str = ""
     candidate_name: str = ""
@@ -50,7 +50,7 @@ class ReportRequest(BaseModel):
 
 class CollusionRequest(BaseModel):
     session_ids: list[str]
-    source: str = "comm"
+    source: str = "comm"          # "comm" | "skill" | "global"
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { X, Clock, CheckCircle, XCircle, AlertTriangle, ChevronLeft, ChevronRight, Send, Eye, Brain, Target, Award, Sparkles, Shield } from 'lucide-react'
+import { X, Clock, CheckCircle, XCircle, AlertTriangle, ChevronLeft, ChevronRight, Send, Eye, Brain, Target, Award, Sparkles, Shield, Camera, CameraOff, Smartphone } from 'lucide-react'
 import axios from 'axios'
 import socketService from '@/services/socketService'
+import { useCamera, useObjectDetection } from '@/hooks/useProctoring'
 
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3000') + '/api'
 
@@ -79,10 +80,41 @@ function AptitudeTestInterface({ test, user, onClose, onComplete }) {
     // ── Session ID for proctoring log ──
     const proctoringSessionId = useRef(`apt_${user.id}_${test.id}_${Date.now()}`)
 
+    // ── Camera & Phone Detection (shared hooks) ──
+    const camera = useCamera(true)
+    const objectDetection = useObjectDetection(camera.videoEnabled, camera.videoRef)
+
     // Keep refs in sync with state (to avoid stale closures in timer)
     useEffect(() => { answersRef.current = answers }, [answers])
     useEffect(() => { tabSwitchesRef.current = tabSwitches }, [tabSwitches])
     useEffect(() => { timeLeftRef.current = timeLeft }, [timeLeft])
+
+    // Initialize camera on mount
+    useEffect(() => {
+        camera.initializeCamera()
+        return () => camera.stopCamera()
+    }, [])
+
+    // Wire camera blocked → recordViolation
+    useEffect(() => {
+        if (camera.cameraBlocked && camera.cameraBlockedCount > 0) {
+            recordViolation('camera_blocked', 'critical')
+            setWarningMessage('📷 Camera is blocked! Uncover your camera immediately.')
+            setShowWarning(true)
+            setTimeout(() => setShowWarning(false), 4000)
+        }
+    }, [camera.cameraBlockedCount])
+
+    // Wire phone detection → recordViolation
+    useEffect(() => {
+        if (objectDetection.phoneDetectionCount > 0) {
+            recordViolation('phone_detected', 'critical')
+            socketService.emitProctoringViolation(user.id, user.name || user.email, 'phone_detected', 'critical', null)
+            setWarningMessage('📱 Phone/device detected! Remove ALL electronic devices immediately.')
+            setShowWarning(true)
+            setTimeout(() => setShowWarning(false), 4000)
+        }
+    }, [objectDetection.phoneDetectionCount])
 
     // ── Auto-terminate test ──
     const autoTerminateTest = useCallback(async (reason) => {
@@ -120,7 +152,7 @@ function AptitudeTestInterface({ test, user, onClose, onComplete }) {
         totalViolationsRef.current += 1
         const count = totalViolationsRef.current
         setTotalViolations(count)
-        axios.post(`${API_BASE}/proctoring/log`, {
+        axios.post(`${API_BASE}/communication/proctoring/log`, {
             userId: user.id,
             sessionId: proctoringSessionId.current,
             eventType,
@@ -1043,9 +1075,53 @@ function AptitudeTestInterface({ test, user, onClose, onComplete }) {
                             <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Unanswered</span>
                         </div>
 
-                        {/* Proctoring Violations Counter */}
+                        {/* Camera Preview */}
                         <div style={{
                             marginTop: '1rem',
+                            width: '100%',
+                            aspectRatio: '4/3',
+                            borderRadius: '8px',
+                            overflow: 'hidden',
+                            background: '#000',
+                            border: `2px solid ${camera.cameraBlocked ? '#ef4444' : camera.videoEnabled ? '#10b981' : '#64748b'}`,
+                            position: 'relative'
+                        }}>
+                            <video ref={camera.videoRef} autoPlay muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            <canvas ref={camera.canvasRef} style={{ display: 'none' }} />
+                            {camera.cameraBlocked && (
+                                <div style={{ position: 'absolute', inset: 0, background: 'rgba(239,68,68,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '0.25rem' }}>
+                                    <CameraOff size={20} color="#fff" />
+                                    <span style={{ fontSize: '0.6rem', color: '#fff', fontWeight: 600 }}>BLOCKED</span>
+                                </div>
+                            )}
+                            {objectDetection.phoneDetectionCount > 0 && !camera.cameraBlocked && (
+                                <div style={{ position: 'absolute', top: 2, right: 2, background: 'rgba(239,68,68,0.95)', borderRadius: '4px', padding: '1px 4px', fontSize: '0.55rem', color: '#fff', fontWeight: 700 }}>📱{objectDetection.phoneDetectionCount}</div>
+                            )}
+                            {!camera.videoEnabled && !camera.cameraAccessDenied && (
+                                <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.6rem', color: '#94a3b8' }}>Loading…</div>
+                            )}
+                            {camera.cameraAccessDenied && (
+                                <div style={{ position: 'absolute', inset: 0, background: 'rgba(239,68,68,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '0.25rem' }}>
+                                    <CameraOff size={16} color="#fca5a5" />
+                                    <span style={{ fontSize: '0.55rem', color: '#fca5a5', textAlign: 'center' }}>Camera denied</span>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Camera Status */}
+                        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', fontSize: '0.65rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                {camera.videoEnabled ? <Camera size={10} color="#10b981" /> : <CameraOff size={10} color="#ef4444" />}
+                                {camera.videoEnabled ? 'Cam' : 'Off'}
+                            </span>
+                            {camera.cameraBlockedCount > 0 && <span style={{ color: '#ef4444' }}>Blk:{camera.cameraBlockedCount}</span>}
+                            {objectDetection.phoneDetectionCount > 0 && <span style={{ color: '#ef4444' }}>📱{objectDetection.phoneDetectionCount}</span>}
+                            {objectDetection.faceMissingCount > 0 && <span style={{ color: '#f59e0b' }}>👤{objectDetection.faceMissingCount}</span>}
+                        </div>
+
+                        {/* Proctoring Violations Counter */}
+                        <div style={{
+                            marginTop: '0.75rem',
                             padding: '0.75rem',
                             background: totalViolations > 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(16, 185, 129, 0.1)',
                             borderRadius: '8px',

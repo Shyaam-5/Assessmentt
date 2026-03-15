@@ -8,7 +8,7 @@ import SQLVisualizer from '@/components/SQLVisualizer'
 import SQLDebugger from '@/components/SQLDebugger'
 import proctoringSocketAdapter from '@/services/proctoringSocketAdapter'
 import socketService from '@/services/socketService'
-import { useTabTracking, useFullscreen, useCopyPasteBlock, useMultiMonitorDetection, useCamera, useObjectDetection, useBehaviorTracking, useAgentTermination, MAX_VIOLATIONS } from '@/hooks/useProctoring'
+import { useTabTracking, useFullscreen, useCopyPasteBlock, useMultiMonitorDetection, useCamera, useObjectDetection, useFaceDetection, useBehaviorTracking, useAgentTermination, MAX_VIOLATIONS } from '@/hooks/useProctoring'
 import { API_BASE, LANGUAGE_CONFIG, SECTION_META, seededShuffle, generateSeed, cleanCode } from './global-test/constants'
 import TestSidebar from './global-test/TestSidebar'
 import { ResultOverlay, SubmittingOverlay, CameraSetupOverlay, TerminationOverlay, CameraBlockedOverlay, WarningBanner } from './global-test/Overlays'
@@ -62,10 +62,24 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
             user?.id, user?.name || user?.email, type,
             count >= maxTabSwitches ? 'critical' : 'warning', null
         )
+        // Log to backend proctoring table for Proctor Agent analysis
+        try {
+            fetch(`${API_BASE}/global-tests/${test.id}/log-proctoring`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sessionId: behaviorSessionId.current,
+                    userId: user?.id,
+                    eventType: type,
+                    severity: count >= maxTabSwitches ? 'critical' : 'medium',
+                    details: { count, maxTabSwitches },
+                }),
+            }).catch(() => {})
+        } catch {}
         if (isEnhanced && count >= maxTabSwitches) {
             handleSubmit(true)
         }
-    }, [maxTabSwitches, isEnhanced, user])
+    }, [maxTabSwitches, isEnhanced, user, test.id])
 
     const { tabSwitches, tabSwitchesRef } = useTabTracking(isEnhanced && proctoring.trackTabSwitches, maxTabSwitches, onViolation)
     useFullscreen(isEnhanced && proctoring.enforceFullscreen, submittedRef)
@@ -73,15 +87,19 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
     const { multipleMonitorCount } = useMultiMonitorDetection(isEnhanced)
     const { videoRef, canvasRef, mediaStream, videoEnabled, audioEnabled, cameraBlocked, cameraBlockedCount, cameraAccessDenied, camBlockRef, initializeCamera, stopCamera } = useCamera(isAI && proctoring.enableVideoAudio)
     const { phoneDetectionCount, faceMissingCount, phoneRef, faceRef } = useObjectDetection(isAI && proctoring.detectPhoneUsage, videoRef)
+    const { noFaceCount, multipleFaceCount } = useFaceDetection(isAI && proctoring.enableVideoAudio, videoRef)
     const { behaviorSessionId, flushBehaviorEvents } = useBehaviorTracking(isAI, user?.id, test.id)
 
-    const totalViolations = tabSwitches + copyPasteAttempts + cameraBlockedCount + phoneDetectionCount + faceMissingCount + multipleMonitorCount
+    const totalViolations = tabSwitches + copyPasteAttempts + cameraBlockedCount + phoneDetectionCount + faceMissingCount + multipleMonitorCount + noFaceCount + multipleFaceCount
     const totalViolationsRef = useRef(0)
     useEffect(() => { totalViolationsRef.current = totalViolations }, [totalViolations])
 
     const onTerminate = useCallback((data) => {
-        terminatedRef.current = true
-        setTimeout(() => handleSubmit(true), 3000)
+        if (submittedRef.current) return
+        setTimeout(() => {
+            handleSubmit(true)
+            terminatedRef.current = true
+        }, 3000)
     }, [])
 
     const { agentTerminated, terminateReason } = useAgentTermination(isAI, user?.id, behaviorSessionId.current, onTerminate)
@@ -93,6 +111,28 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
             handleSubmit(true)
         }
     }, [totalViolations, isEnhanced])
+
+    // Log face detection violations to backend
+    useEffect(() => {
+        if (noFaceCount > 0) {
+            fetch(`${API_BASE}/global-tests/${test.id}/log-proctoring`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: behaviorSessionId.current, userId: user?.id, eventType: 'no_face', severity: 'high', details: { count: noFaceCount } }),
+            }).catch(() => {})
+        }
+    }, [noFaceCount])
+
+    useEffect(() => {
+        if (multipleFaceCount > 0) {
+            socketService.emitProctoringViolation(user?.id, user?.name || user?.email, 'multiple_faces', 'critical', null)
+            fetch(`${API_BASE}/global-tests/${test.id}/log-proctoring`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: behaviorSessionId.current, userId: user?.id, eventType: 'multiple_faces', severity: 'critical', details: { count: multipleFaceCount } }),
+            }).catch(() => {})
+        }
+    }, [multipleFaceCount])
 
     // ── Questions ──
     const allQuestions = useMemo(() => {

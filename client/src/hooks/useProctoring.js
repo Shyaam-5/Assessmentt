@@ -26,16 +26,9 @@ export function useTabTracking(enabled, maxSwitches, onViolation) {
                 onViolation?.('tab_switch', tabRef.current)
             }
         }
-        const onBlur = () => {
-            tabRef.current += 1
-            setTabSwitches(tabRef.current)
-            onViolation?.('window_blur', tabRef.current)
-        }
         document.addEventListener('visibilitychange', onVisChange)
-        window.addEventListener('blur', onBlur)
         return () => {
             document.removeEventListener('visibilitychange', onVisChange)
-            window.removeEventListener('blur', onBlur)
         }
     }, [enabled, onViolation])
 
@@ -245,6 +238,71 @@ export function useObjectDetection(enabled, videoRef) {
     return { phoneDetectionCount, faceMissingCount, phoneRef, faceRef }
 }
 
+// ── Face Detection (BlazeFace) ───────────────────────────────────
+export function useFaceDetection(enabled, videoRef) {
+    const [noFaceCount, setNoFaceCount] = useState(0)
+    const [multipleFaceCount, setMultipleFaceCount] = useState(0)
+    const noFaceRef = useRef(0)
+    const multiFaceRef = useRef(0)
+    const modelRef = useRef(null)
+
+    useEffect(() => {
+        if (!enabled) return
+        let mounted = true
+        let intervalId = null
+
+        // Cooldowns to prevent rapid alerts
+        let lastNoFaceAlert = 0
+        let lastMultiFaceAlert = 0
+        const COOLDOWN_MS = 8000
+        // Streak-based detection (avoids false positives from single dropped frames)
+        let noFaceStreak = 0
+        const NO_FACE_STREAK_THRESHOLD = 4  // ~8s at 2s interval
+
+        const loadAndDetect = async () => {
+            try {
+                const tf = await import('@tensorflow/tfjs')
+                await tf.ready()
+                const blazeface = await import('@tensorflow-models/blazeface')
+                modelRef.current = await blazeface.load()
+                if (!mounted) return
+                console.log('✅ BlazeFace model loaded for face detection')
+
+                intervalId = setInterval(async () => {
+                    if (!videoRef.current || videoRef.current.readyState < 2 || !modelRef.current) return
+                    try {
+                        const predictions = await modelRef.current.estimateFaces(videoRef.current, false)
+                        const now = Date.now()
+
+                        if (predictions.length === 0) {
+                            noFaceStreak++
+                            if (noFaceStreak >= NO_FACE_STREAK_THRESHOLD && now - lastNoFaceAlert > COOLDOWN_MS) {
+                                lastNoFaceAlert = now
+                                noFaceRef.current += 1
+                                setNoFaceCount(noFaceRef.current)
+                                noFaceStreak = 0  // reset after firing
+                            }
+                        } else {
+                            noFaceStreak = 0
+                        }
+
+                        if (predictions.length > 1 && now - lastMultiFaceAlert > COOLDOWN_MS) {
+                            lastMultiFaceAlert = now
+                            multiFaceRef.current += 1
+                            setMultipleFaceCount(multiFaceRef.current)
+                        }
+                    } catch { /* ignore detection errors */ }
+                }, 2000)
+            } catch (err) { console.error('BlazeFace model load failed:', err) }
+        }
+
+        loadAndDetect()
+        return () => { mounted = false; if (intervalId) clearInterval(intervalId) }
+    }, [enabled, videoRef])
+
+    return { noFaceCount, multipleFaceCount, noFaceRef, multiFaceRef }
+}
+
 // ── Behavior Tracking (AI-Proctored) ─────────────────────────────
 export function useBehaviorTracking(enabled, userId, testId) {
     const behaviorSessionId = useRef(`beh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
@@ -256,10 +314,10 @@ export function useBehaviorTracking(enabled, userId, testId) {
         const batch = [...eventsBuffer.current]
         eventsBuffer.current = []
         try {
-            await fetch(`${API_BASE}/behavior-agent/events`, {
+            await fetch(`${API_BASE}/behavior/log-events`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionId: behaviorSessionId.current, userId, testId, events: batch }),
+                body: JSON.stringify({ session_id: behaviorSessionId.current, user_id: userId, events: batch }),
             })
         } catch { /* ignore flush errors */ }
     }, [userId, testId, API_BASE])
