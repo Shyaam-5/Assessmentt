@@ -24,6 +24,13 @@ from database import get_pool
 router = APIRouter(prefix="/api/proctor-agent", tags=["proctor-agent"])
 
 
+_SOURCE_TABLE_MAP = {
+    "comm": ("comm_proctoring_logs", "session_id"),
+    "skill": ("skill_proctoring_logs", "attempt_id"),
+    "global": ("global_proctoring_logs", "session_id"),
+}
+
+
 # ═══════════════════════════════════════════════════════════════
 #  Request / Response models
 # ═══════════════════════════════════════════════════════════════
@@ -329,3 +336,56 @@ async def agent_dashboard():
             for r in flagged_rows
         ],
     }
+
+
+@router.get("/logs")
+async def list_proctoring_logs(
+    source: str = Query("global"),
+    session_id: Optional[str] = Query(None),
+    user_id: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """List raw proctoring logs for admin inspection and troubleshooting.
+
+    Useful to verify whether events are reaching backend and being picked up by the AI agent.
+    """
+    src = (source or "global").strip().lower()
+    if src not in _SOURCE_TABLE_MAP:
+        raise HTTPException(status_code=400, detail="Invalid source. Use: comm | skill | global")
+
+    table, id_col = _SOURCE_TABLE_MAP[src]
+
+    query = f"SELECT * FROM {table} WHERE 1=1"
+    params = []
+
+    if session_id:
+        query += f" AND {id_col}=%s"
+        params.append(session_id)
+    if user_id and src in ("comm", "global"):
+        query += " AND user_id=%s"
+        params.append(user_id)
+
+    query += " ORDER BY created_at DESC LIMIT %s"
+    params.append(limit)
+
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(query, tuple(params))
+                rows = await cur.fetchall()
+    except Exception as e:
+        msg = str(e).lower()
+        if "doesn't exist" in msg or "does not exist" in msg:
+            return {"source": src, "count": 0, "logs": [], "warning": f"Table {table} not found yet"}
+        raise HTTPException(status_code=500, detail=f"Failed to fetch logs: {str(e)}")
+
+    from datetime import datetime
+    logs = [
+        {
+            **r,
+            "created_at": r["created_at"].isoformat() if isinstance(r.get("created_at"), datetime) else str(r.get("created_at", "")),
+        }
+        for r in rows
+    ]
+    return {"source": src, "count": len(logs), "logs": logs}

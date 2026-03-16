@@ -128,6 +128,9 @@ export default function ProctorAgentDashboard() {
     const [loading, setLoading] = useState(false)
     const [selectedAnalysis, setSelectedAnalysis] = useState(null)
     const [selectedReport, setSelectedReport] = useState(null)
+    const [logs, setLogs] = useState([])
+    const [logsMeta, setLogsMeta] = useState({ source: 'global', count: 0, warning: '' })
+    const [logsFilter, setLogsFilter] = useState({ source: 'global', session_id: '', user_id: '', limit: 100 })
 
     // Single analysis form
     const [analyzeForm, setAnalyzeForm] = useState({ session_id: '', source: 'comm', user_id: '', exam_title: '' })
@@ -151,18 +154,25 @@ export default function ProctorAgentDashboard() {
     const fetchDashboard = useCallback(async () => {
         try {
             setLoading(true)
-            const [dashRes, listRes] = await Promise.all([
+            const [dashRes, listRes, logsRes] = await Promise.all([
                 axios.get(`${API_BASE}/proctor-agent/dashboard`),
                 axios.get(`${API_BASE}/proctor-agent/analyses?limit=50`),
+                axios.get(`${API_BASE}/proctor-agent/logs`, { params: logsFilter }),
             ])
             setDashboard(dashRes.data)
             setAnalyses(listRes.data.analyses || [])
+            setLogs(logsRes.data.logs || [])
+            setLogsMeta({
+                source: logsRes.data.source || logsFilter.source,
+                count: logsRes.data.count || 0,
+                warning: logsRes.data.warning || '',
+            })
         } catch (err) {
             console.error('Failed to load agent dashboard:', err)
         } finally {
             setLoading(false)
         }
-    }, [])
+    }, [logsFilter])
 
     useEffect(() => { fetchDashboard() }, [fetchDashboard])
 
@@ -331,31 +341,52 @@ export default function ProctorAgentDashboard() {
                         </span>
                         <button onClick={() => setLiveAlerts([])} style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '0.7rem' }}>Clear</button>
                     </div>
-                    {liveAlerts.slice(0, 5).map((a, i) => (
-                        <div key={i} style={{
-                            display: 'flex', alignItems: 'center', gap: 10, padding: '5px 0',
-                            borderTop: i > 0 ? '1px solid #334155' : 'none', fontSize: '0.78rem'
-                        }}>
-                            <RiskBadge level={a.risk_level} />
-                            <span style={{ color: '#e2e8f0', fontFamily: 'monospace', fontSize: '0.72rem' }}>{formatSessionId(a.session_id, a.user_id)}</span>
-                            <span style={{ color: '#94a3b8' }}>Score: <b style={{ color: a.fraud_score >= 60 ? '#ef4444' : '#f59e0b' }}>{a.fraud_score}</b></span>
-                            <span style={{ color: '#64748b', fontSize: '0.7rem' }}>{a.recommended_action}</span>
-                            {(a.risk_level === 'terminate' || a.risk_level === 'critical' || a.recommended_action?.toLowerCase().includes('terminate')) && (
-                                <button onClick={() => terminateSession(a.session_id, a.user_id, `Agent alert: ${a.risk_level} risk, score ${a.fraud_score}`)}
-                                    style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '2px 8px', fontSize: '0.68rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
-                                    <Ban size={10} /> Terminate
-                                </button>
-                            )}
-                            <span style={{ color: '#475569', fontSize: '0.68rem', marginLeft: 'auto' }}>
-                                {a.receivedAt ? new Date(a.receivedAt).toLocaleTimeString() : ''}
-                            </span>
-                        </div>
-                    ))}
+                    {liveAlerts.slice(0, 5).map((a, i) => {
+                        const action = (a.recommended_action || '').toLowerCase()
+                        const alreadyTerminated = a.type === 'auto_terminate' || a.type === 'manual_terminate' || a.auto_terminated === true || action === 'terminate'
+                        const shouldShowTerminate = !alreadyTerminated && (a.risk_level === 'terminate' || a.risk_level === 'critical' || action.includes('terminate'))
+
+                        return (
+                            <div key={i} style={{
+                                display: 'flex', alignItems: 'center', gap: 10, padding: '5px 0',
+                                borderTop: i > 0 ? '1px solid #334155' : 'none', fontSize: '0.78rem'
+                            }}>
+                                <RiskBadge level={a.risk_level} />
+                                <span style={{ color: '#e2e8f0', fontFamily: 'monospace', fontSize: '0.72rem' }}>{formatSessionId(a.session_id, a.user_id)}</span>
+                                <span style={{ color: '#94a3b8' }}>Score: <b style={{ color: a.fraud_score >= 60 ? '#ef4444' : '#f59e0b' }}>{a.fraud_score}</b></span>
+                                <span style={{ color: '#64748b', fontSize: '0.7rem' }}>{a.recommended_action}</span>
+                                {shouldShowTerminate && (
+                                    <button onClick={() => terminateSession(a.session_id, a.user_id, `Agent alert: ${a.risk_level} risk, score ${a.fraud_score}`)}
+                                        style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '2px 8px', fontSize: '0.68rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
+                                        <Ban size={10} /> Terminate
+                                    </button>
+                                )}
+                                {alreadyTerminated && (
+                                    <span style={{ background: '#14532d', color: '#86efac', border: '1px solid #166534', borderRadius: 6, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600 }}>
+                                        Terminated
+                                    </span>
+                                )}
+                                <span style={{ color: '#475569', fontSize: '0.68rem', marginLeft: 'auto' }}>
+                                    {a.receivedAt ? new Date(a.receivedAt).toLocaleTimeString() : ''}
+                                </span>
+                            </div>
+                        )
+                    })}
                 </div>
             )}
 
             {/* Tab content */}
             {tab === 'dashboard' && <DashboardTab dashboard={dashboard} analyses={analyses} onViewAnalysis={viewAnalysis} onTerminate={terminateSession} />}
+            {tab === 'dashboard' && (
+                <LogsTab
+                    logs={logs}
+                    logsMeta={logsMeta}
+                    logsFilter={logsFilter}
+                    setLogsFilter={setLogsFilter}
+                    onRefresh={fetchDashboard}
+                    loading={loading}
+                />
+            )}
             {tab === 'analyze' && (
                 <AnalyzeTab form={analyzeForm} setForm={setAnalyzeForm} onRun={runAnalysis} result={analyzeResult} loading={loading} />
             )}
@@ -380,6 +411,89 @@ export default function ProctorAgentDashboard() {
             {selectedReport && (
                 <ReportDetailModal data={selectedReport} onClose={() => setSelectedReport(null)} />
             )}
+        </div>
+    )
+}
+
+
+function LogsTab({ logs, logsMeta, logsFilter, setLogsFilter, onRefresh, loading }) {
+    return (
+        <div style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
+                <div>
+                    <h3 style={{ margin: 0, color: '#f1f5f9', fontSize: '1rem' }}>Recent Proctoring Logs</h3>
+                    <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: '0.78rem' }}>
+                        Source: {logsMeta.source} · Showing {logsMeta.count} rows
+                    </p>
+                </div>
+                <button onClick={onRefresh} style={btnOutline} disabled={loading}>
+                    <RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh Logs
+                </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 120px', gap: 8, marginBottom: 10 }}>
+                <select
+                    value={logsFilter.source}
+                    onChange={(e) => setLogsFilter(prev => ({ ...prev, source: e.target.value }))}
+                    style={inputStyle}
+                >
+                    <option value="global">global</option>
+                    <option value="comm">comm</option>
+                    <option value="skill">skill</option>
+                </select>
+                <input
+                    value={logsFilter.session_id}
+                    onChange={(e) => setLogsFilter(prev => ({ ...prev, session_id: e.target.value }))}
+                    placeholder="Session ID (optional)"
+                    style={inputStyle}
+                />
+                <input
+                    value={logsFilter.user_id}
+                    onChange={(e) => setLogsFilter(prev => ({ ...prev, user_id: e.target.value }))}
+                    placeholder="User ID (optional)"
+                    style={inputStyle}
+                />
+                <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={logsFilter.limit}
+                    onChange={(e) => setLogsFilter(prev => ({ ...prev, limit: Number(e.target.value) || 100 }))}
+                    style={inputStyle}
+                />
+            </div>
+
+            {logsMeta.warning && (
+                <div style={{ marginBottom: 10, color: '#f59e0b', fontSize: '0.75rem' }}>
+                    {logsMeta.warning}
+                </div>
+            )}
+
+            <div style={{ maxHeight: 280, overflow: 'auto', border: '1px solid #1e293b', borderRadius: 8 }}>
+                {logs.length === 0 ? (
+                    <div style={{ padding: 14, color: '#64748b', fontSize: '0.8rem' }}>No logs found for current filters.</div>
+                ) : (
+                    logs.map((l) => (
+                        <div
+                            key={`${l.id}-${l.created_at}`}
+                            style={{
+                                padding: '10px 12px',
+                                borderBottom: '1px solid #1e293b',
+                                display: 'grid',
+                                gridTemplateColumns: '200px 120px 1fr 170px',
+                                gap: 10,
+                                alignItems: 'center',
+                                fontSize: '0.75rem',
+                            }}
+                        >
+                            <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>{l.session_id || l.attempt_id || 'n/a'}</span>
+                            <span style={{ color: '#e2e8f0' }}>{l.event_type || 'unknown'}</span>
+                            <span style={{ color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{String(l.details || '').slice(0, 120)}</span>
+                            <span style={{ color: '#64748b' }}>{l.created_at ? new Date(l.created_at).toLocaleString() : ''}</span>
+                        </div>
+                    ))
+                )}
+            </div>
         </div>
     )
 }
@@ -479,10 +593,16 @@ function DashboardTab({ dashboard, analyses, onViewAnalysis, onTerminate }) {
                                             <button onClick={() => onViewAnalysis(r.id)} style={{ ...btnOutline, padding: '4px 10px', fontSize: '0.7rem' }}>
                                                 <Eye size={12} /> View
                                             </button>
-                                            <button onClick={() => onTerminate(r.session_id, r.user_id, `Flagged session: ${r.risk_level}, score ${r.fraud_score}`)}
-                                                style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: '0.7rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
-                                                <Ban size={12} /> End
-                                            </button>
+                                            {(r.risk_level !== 'terminate' && (r.recommended_action || '').toLowerCase() !== 'terminate') ? (
+                                                <button onClick={() => onTerminate(r.session_id, r.user_id, `Flagged session: ${r.risk_level}, score ${r.fraud_score}`)}
+                                                    style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: '0.7rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
+                                                    <Ban size={12} /> End
+                                                </button>
+                                            ) : (
+                                                <span style={{ background: '#14532d', color: '#86efac', border: '1px solid #166534', borderRadius: 6, padding: '4px 10px', fontSize: '0.7rem', fontWeight: 600 }}>
+                                                    Terminated
+                                                </span>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}
@@ -530,11 +650,16 @@ function DashboardTab({ dashboard, analyses, onViewAnalysis, onTerminate }) {
                                             <button onClick={() => onViewAnalysis(a.id)} style={{ ...btnOutline, padding: '4px 10px', fontSize: '0.7rem' }}>
                                                 <Eye size={12} /> View
                                             </button>
-                                            {(a.risk_level === 'terminate' || a.risk_level === 'critical') && (
+                                            {(a.risk_level === 'critical' && (a.recommended_action || '').toLowerCase() !== 'terminate') && (
                                                 <button onClick={() => onTerminate(a.session_id, a.user_id, `Analysis #${a.id}: ${a.risk_level}, score ${a.fraud_score}`)}
                                                     style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: '0.7rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
                                                     <Ban size={12} /> End
                                                 </button>
+                                            )}
+                                            {((a.risk_level === 'terminate') || (a.recommended_action || '').toLowerCase() === 'terminate') && (
+                                                <span style={{ background: '#14532d', color: '#86efac', border: '1px solid #166534', borderRadius: 6, padding: '4px 10px', fontSize: '0.7rem', fontWeight: 600 }}>
+                                                    Terminated
+                                                </span>
                                             )}
                                         </td>
                                     </tr>

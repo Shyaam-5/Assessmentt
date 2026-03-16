@@ -381,12 +381,16 @@ async def _maybe_trigger_agent(session_id: str, severity: str, user_id: str = ""
             if result.get("recommended_action") == "terminate" or result.get("risk_level") == "terminate":
                 try:
                     from main import sio
+                    key_findings = result.get("ai_analysis", {}).get("key_findings", [])
+                    reason_text = result.get("termination_reason") or result.get("ai_analysis", {}).get("evidence_summary")
+                    if not reason_text:
+                        reason_text = "Proctoring Intelligence Agent detected critical integrity violations."
                     terminate_payload = {
                         "session_id": session_id,
-                        "reason": "Proctoring Intelligence Agent detected critical integrity violations.",
+                        "reason": reason_text,
                         "fraud_score": result["fraud_score"],
                         "risk_level": result.get("risk_level"),
-                        "key_findings": result.get("ai_analysis", {}).get("key_findings", []),
+                        "key_findings": key_findings,
                     }
                     await sio.emit("agent_terminate", terminate_payload, room=f"session_{session_id}")
                     if user_id:

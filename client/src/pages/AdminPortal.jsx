@@ -2876,6 +2876,7 @@ function GlobalTestsAdmin() {
         disableCopyPaste: true,
         detectCameraBlocking: true,
         detectPhoneUsage: true,
+        enableAIProctoringAgent: true,
         enforceFullscreen: true,
         autoSubmitOnViolation: false
     })
@@ -2888,6 +2889,7 @@ function GlobalTestsAdmin() {
         disableCopyPaste: true,
         detectCameraBlocking: true,
         detectPhoneUsage: true,
+        enableAIProctoringAgent: true,
         enforceFullscreen: true,
         autoSubmitOnViolation: false
     }
@@ -3189,6 +3191,7 @@ function GlobalTestsAdmin() {
                     disableCopyPaste: proctoringSettings.disableCopyPaste,
                     detectCameraBlocking: proctoringSettings.detectCameraBlocking,
                     detectPhoneUsage: proctoringSettings.detectPhoneUsage,
+                    enableAIProctoringAgent: proctoringSettings.enableAIProctoringAgent,
                     enforceFullscreen: proctoringSettings.enforceFullscreen,
                     autoSubmitOnViolation: proctoringSettings.autoSubmitOnViolation
                 } : { enabled: false },
@@ -3293,6 +3296,7 @@ function GlobalTestsAdmin() {
                 disableCopyPaste: savedProctoring.disableCopyPaste ?? false,
                 detectCameraBlocking: savedProctoring.detectCameraBlocking ?? false,
                 detectPhoneUsage: savedProctoring.detectPhoneUsage ?? false,
+                enableAIProctoringAgent: savedProctoring.enableAIProctoringAgent ?? savedProctoring.aiProctoringAgentEnabled ?? true,
                 enforceFullscreen: savedProctoring.enforceFullscreen ?? false,
                 autoSubmitOnViolation: savedProctoring.autoSubmitOnViolation ?? false
             })
@@ -3707,6 +3711,18 @@ function GlobalTestsAdmin() {
                                                         Disable Copy/Paste
                                                     </label>
                                                     <p style={{ margin: '0.25rem 0 0 1.5rem', fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)' }}>Block clipboard actions</p>
+                                                </div>
+
+                                                {/* AI Proctoring Agent */}
+                                                <div style={{ padding: '0.75rem', background: 'rgba(16,185,129,0.08)', borderRadius: '10px', border: '1px solid rgba(16,185,129,0.25)' }}>
+                                                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
+                                                        <input type="checkbox" checked={proctoringSettings.enableAIProctoringAgent} onChange={e => setProctoringSettings({ ...proctoringSettings, enableAIProctoringAgent: e.target.checked })} />
+                                                        <Bot size={16} color="#10b981" />
+                                                        Enable AI Proctoring Agent
+                                                    </label>
+                                                    <p style={{ margin: '0.25rem 0 0 1.5rem', fontSize: '0.7rem', color: 'rgba(16,185,129,0.85)' }}>
+                                                        If unavailable, test continues with strict rule-based auto-termination.
+                                                    </p>
                                                 </div>
 
                                                 {/* Fullscreen Enforcement */}

@@ -116,9 +116,11 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
     const cameraCheckIntervalRef = useRef(null)
     const objectDetectorRef = useRef(null)
     const phoneCheckIntervalRef = useRef(null)
+    const lastPhoneDetectionAtRef = useRef(0)
     const cameraBlockedCountRef = useRef(0)
     const phoneDetectionCountRef = useRef(0)
     const copyPasteAttemptsRef = useRef(0)
+    const lastPasteAttemptAtRef = useRef(0)
     const [faceMissingCount, setFaceMissingCount] = useState(0)
     const faceMissingCountRef = useRef(0)
     const cameraBlockedRef = useRef(false)
@@ -138,6 +140,7 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
 
     // ── Behavior Agent Tracking ──
     const behaviorSessionId = useRef(`beh_${user.id}_${test.id}_${Date.now()}`)
+    const aiProctoringAvailableRef = useRef(true)
     const behaviorEventsBuffer = useRef([])
     const lastKeystrokeTime = useRef(Date.now())
     const codeSnapshotInterval = useRef(null)
@@ -147,6 +150,7 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
     const BEHAVIOR_SEND_INTERVAL_MS = 15000
     const CODE_SNAPSHOT_INTERVAL_MS = 30000
     const IDLE_DETECT_MS = 30000
+    const aiProctoringEnabled = !!(proctoring.enabled && proctoring.enableAIProctoringAgent !== false)
 
     const sectionsWithQuestions = useMemo(() => {
         const bySection = test.questionsBySection || {}
@@ -218,17 +222,25 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
         totalViolationsRef.current += 1
         const count = totalViolationsRef.current
         setTotalViolations(count)
-        axios.post(`${API_BASE}/proctoring/log`, {
-            userId: user.id,
-            sessionId: behaviorSessionId.current,
-            eventType,
-            severity,
-            details: `Violation ${count}/${MAX_VIOLATIONS}`
-        }).catch(() => {})
+        if (aiProctoringAvailableRef.current) {
+            axios.post(`${API_BASE}/global-tests/proctoring/log`, {
+                userId: user.id,
+                sessionId: behaviorSessionId.current,
+                testId: test.id,
+                eventType,
+                severity,
+                details: `Violation ${count}/${MAX_VIOLATIONS}`,
+                aiEnabled: aiProctoringEnabled,
+            }).catch((err) => {
+                // If AI log endpoint is unavailable, continue strict local rule-based enforcement only.
+                aiProctoringAvailableRef.current = false
+                console.warn('[ProctorAgent] AI proctoring log unavailable; continuing with rule-based termination only.', err?.message || err)
+            })
+        }
         if (count >= MAX_VIOLATIONS) {
             autoTerminateTest(`Maximum proctoring violations reached (${count}/${MAX_VIOLATIONS}). Your test has been automatically terminated.`)
         }
-    }, [autoTerminateTest, user.id])
+    }, [autoTerminateTest, user.id, test.id, aiProctoringEnabled])
 
     // ── Behavior Agent: push event, flush to backend ──
     const pushBehaviorEvent = useCallback((type, data = {}) => {
@@ -394,7 +406,7 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
                     await tf.ready()
                     const model = await cocoSsd.load()
                     objectDetectorRef.current = model
-                    phoneCheckIntervalRef.current = setInterval(detectObjects, 3000)
+                    phoneCheckIntervalRef.current = setInterval(detectObjects, 1000)
                 } catch (e) {
                     console.warn('Failed to load object detector:', e)
                 }
@@ -439,26 +451,32 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
 
             // Phone Detection
             if (proctoring.detectPhoneUsage) {
-                const phone = predictions.find(p => p.class === 'cell phone' && p.score > 0.6)
+                const PHONE_CONFIDENCE_THRESHOLD = 0.35
+                const PHONE_EVENT_COOLDOWN_MS = 1200
+                const phone = predictions.find(p => p.class === 'cell phone' && p.score > PHONE_CONFIDENCE_THRESHOLD)
+                const now = Date.now()
                 if (phone) {
                     setPhoneDetected(true)
-                    setPhoneDetectionCount(prev => {
-                        const next = prev + 1
-                        phoneDetectionCountRef.current = next
-                        setWarningMessage(`📵 Mobile Phone Detected! (${next})`)
-                        setShowWarning(true)
-                        setTimeout(() => setShowWarning(false), 3000)
-                        // Emit proctoring violation to server for admin monitoring
-                        socketService.emitProctoringViolation(
-                            user.id,
-                            user.name || user.email,
-                            'phone_detected',
-                            next >= 3 ? 'critical' : 'warning',
-                            null
-                        )
-                        recordViolation('phone_detected', next >= 3 ? 'critical' : 'warning')
-                        return next
-                    })
+                    if (now - lastPhoneDetectionAtRef.current >= PHONE_EVENT_COOLDOWN_MS) {
+                        lastPhoneDetectionAtRef.current = now
+                        setPhoneDetectionCount(prev => {
+                            const next = prev + 1
+                            phoneDetectionCountRef.current = next
+                            setWarningMessage(`📵 Mobile Phone Detected! (${next})`)
+                            setShowWarning(true)
+                            setTimeout(() => setShowWarning(false), 3000)
+                            // Emit proctoring violation to server for admin monitoring
+                            socketService.emitProctoringViolation(
+                                user.id,
+                                user.name || user.email,
+                                'phone_detected',
+                                next >= 3 ? 'critical' : 'warning',
+                                null
+                            )
+                            recordViolation('phone_detected', next >= 3 ? 'critical' : 'warning')
+                            return next
+                        })
+                    }
                 } else {
                     setPhoneDetected(false)
                 }
@@ -548,6 +566,28 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
 
     useEffect(() => {
         if (!proctoring.enabled || !proctoring.disableCopyPaste) return
+        const registerPasteViolation = () => {
+            const now = Date.now()
+            // De-duplicate keyboard + paste event bursts from the same user action.
+            if (now - lastPasteAttemptAtRef.current < 500) return
+            lastPasteAttemptAtRef.current = now
+            setCopyPasteAttempts(prev => {
+                const next = prev + 1
+                copyPasteAttemptsRef.current = next
+                setWarningMessage(`📋 Paste attempt blocked! (${next})`)
+                setShowWarning(true)
+                setTimeout(() => setShowWarning(false), 2000)
+                socketService.emitProctoringViolation(
+                    user.id,
+                    user.name || user.email,
+                    'paste_attempt',
+                    next >= 5 ? 'critical' : 'warning',
+                    null
+                )
+                recordViolation('paste_attempt', next >= 5 ? 'critical' : 'warning')
+                return next
+            })
+        }
         const handleCopy = (e) => {
             e.preventDefault()
             setCopyPasteAttempts(prev => {
@@ -570,31 +610,33 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
         }
         const handlePaste = (e) => {
             e.preventDefault()
-            setCopyPasteAttempts(prev => {
-                const next = prev + 1
-                copyPasteAttemptsRef.current = next
-                setWarningMessage(`📋 Paste attempt blocked! (${next})`)
-                setShowWarning(true)
-                setTimeout(() => setShowWarning(false), 2000)
-                // Emit proctoring violation to server for admin monitoring
-                socketService.emitProctoringViolation(
-                    user.id,
-                    user.name || user.email,
-                    'paste_attempt',
-                    next >= 5 ? 'critical' : 'warning',
-                    null
-                )
-                recordViolation('paste_attempt', next >= 5 ? 'critical' : 'warning')
-                return next
-            })
+            registerPasteViolation()
+        }
+        const handleBeforeInput = (e) => {
+            if (e.inputType === 'insertFromPaste') {
+                e.preventDefault()
+                registerPasteViolation()
+            }
+        }
+        const handlePasteKeys = (e) => {
+            const isCtrlOrMetaPaste = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v'
+            const isShiftInsert = e.shiftKey && e.key === 'Insert'
+            if (isCtrlOrMetaPaste || isShiftInsert) {
+                e.preventDefault()
+                registerPasteViolation()
+            }
         }
         const handleContextMenu = (e) => e.preventDefault()
-        document.addEventListener('copy', handleCopy)
-        document.addEventListener('paste', handlePaste)
+        document.addEventListener('copy', handleCopy, true)
+        document.addEventListener('paste', handlePaste, true)
+        document.addEventListener('beforeinput', handleBeforeInput, true)
+        document.addEventListener('keydown', handlePasteKeys, true)
         document.addEventListener('contextmenu', handleContextMenu)
         return () => {
-            document.removeEventListener('copy', handleCopy)
-            document.removeEventListener('paste', handlePaste)
+            document.removeEventListener('copy', handleCopy, true)
+            document.removeEventListener('paste', handlePaste, true)
+            document.removeEventListener('beforeinput', handleBeforeInput, true)
+            document.removeEventListener('keydown', handlePasteKeys, true)
             document.removeEventListener('contextmenu', handleContextMenu)
         }
     }, [proctoring.enabled, proctoring.disableCopyPaste])
@@ -683,7 +725,7 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
 
     // ── Proctor Agent Termination Listener ──
     useEffect(() => {
-        if (!proctoring.enabled) return
+        if (!aiProctoringEnabled || !aiProctoringAvailableRef.current) return
         proctoringSocketAdapter.connect()
         proctoringSocketAdapter.joinStudentSession(user.id, behaviorSessionId.current)
         const handleTerminate = (data) => {
@@ -694,7 +736,7 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
         return () => {
             proctoringSocketAdapter.removeListener('agent_terminate')
         }
-    }, [proctoring.enabled, user.id, autoTerminateTest])
+    }, [aiProctoringEnabled, user.id, autoTerminateTest])
 
     // ── Behavior Agent: periodic flush + engagement tracking ──
     useEffect(() => {

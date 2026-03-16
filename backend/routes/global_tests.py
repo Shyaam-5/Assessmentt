@@ -1,5 +1,6 @@
 """Global test routes: CRUD for tests, questions, submissions, and AI reports."""
 
+import asyncio
 import json
 import re
 import uuid
@@ -88,6 +89,16 @@ class GlobalTestSubmit(BaseModel):
     terminationReason: Optional[str] = None
 
 
+class GlobalProctoringLog(BaseModel):
+    userId: str
+    sessionId: str
+    testId: Optional[str] = None
+    eventType: str = "unknown"
+    severity: str = "low"
+    details: Optional[Any] = ""
+    aiEnabled: bool = True
+
+
 # ─── Helpers ───────────────────────────────────────────────────
 
 def _fmt_dt(iso: Optional[str]) -> Optional[str]:
@@ -158,6 +169,7 @@ def _normalize_proctoring_config(raw: Any, fallback_max_tab: int = 3) -> dict:
     detect_phone = _to_bool(cfg.get("detectPhoneUsage"), False) if enabled else False
     fullscreen = _to_bool(cfg.get("enforceFullscreen"), False) if enabled else False
     auto_submit = _to_bool(cfg.get("autoSubmitOnViolation"), False) if enabled else False
+    ai_agent = _to_bool(cfg.get("enableAIProctoringAgent", cfg.get("aiProctoringAgentEnabled", True)), True) if enabled else False
 
     return {
         "enabled": enabled,
@@ -169,10 +181,149 @@ def _normalize_proctoring_config(raw: Any, fallback_max_tab: int = 3) -> dict:
         "detectPhoneUsage": detect_phone,
         "enforceFullscreen": fullscreen,
         "autoSubmitOnViolation": auto_submit,
+        "enableAIProctoringAgent": ai_agent,
         # Compatibility keys for consumers that still use problem-style naming.
         "videoAudio": enable_video,
         "enableFaceDetection": detect_block,
+        "aiProctoringAgentEnabled": ai_agent,
     }
+
+
+# ─── Global Proctoring Logs + AI Agent Trigger ────────────────
+
+_GLOBAL_PROCTOR_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS global_proctoring_logs (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    user_id     VARCHAR(50)   NOT NULL,
+    session_id  VARCHAR(120)  NOT NULL,
+    event_type  VARCHAR(60)   NOT NULL,
+    severity    VARCHAR(20)   DEFAULT 'low',
+    details     TEXT,
+    created_at  TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_global_session (session_id),
+    INDEX idx_global_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+_global_proctor_table_ready = False
+_global_agent_counter: dict[str, int] = {}
+_GLOBAL_AGENT_INTERVAL = 3
+_GLOBAL_AGENT_TRIGGER_SEVERITIES = {"medium", "high", "critical"}
+
+
+def _normalize_severity(severity: str) -> str:
+    s = (severity or "low").strip().lower()
+    if s == "warning":
+        return "medium"
+    if s in {"low", "medium", "high", "critical"}:
+        return s
+    return "low"
+
+
+async def _ensure_global_proctor_table():
+    global _global_proctor_table_ready
+    if _global_proctor_table_ready:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(_GLOBAL_PROCTOR_TABLE_SQL)
+        await conn.commit()
+    _global_proctor_table_ready = True
+
+
+async def _maybe_trigger_global_agent(session_id: str, user_id: str = ""):
+    """Run global-session AI proctor analysis in background and emit terminate when needed."""
+    try:
+        from services.proctor_agent import agent_analyze_session, save_analysis
+        result = await agent_analyze_session(session_id, "global", user_id=user_id)
+        if result.get("fraud_score", 0) > 0:
+            await save_analysis({**result, "source": "global"})
+
+            if result.get("recommended_action") == "terminate" or result.get("risk_level") == "terminate":
+                try:
+                    from main import sio
+                    key_findings = result.get("ai_analysis", {}).get("key_findings", [])
+                    reason_text = result.get("termination_reason") or result.get("ai_analysis", {}).get("evidence_summary")
+                    if not reason_text:
+                        reason_text = "Proctoring Intelligence Agent detected critical integrity violations."
+                    terminate_payload = {
+                        "session_id": session_id,
+                        "reason": reason_text,
+                        "fraud_score": result.get("fraud_score"),
+                        "risk_level": result.get("risk_level"),
+                        "key_findings": key_findings,
+                    }
+                    await sio.emit("agent_terminate", terminate_payload, room=f"session_{session_id}")
+                    if user_id:
+                        await sio.emit("agent_terminate", terminate_payload, room=f"student_{user_id}")
+                    await sio.emit("agent_alert", {
+                        "type": "auto_terminate",
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "fraud_score": result.get("fraud_score"),
+                        "risk_level": "terminate",
+                        "recommended_action": "terminate",
+                        "source": "global",
+                    }, room="admin_room")
+                    print(f"[ProctorAgent] AUTO-TERMINATE sent for global session {session_id} (score: {result.get('fraud_score')})")
+                except Exception as emit_err:
+                    print(f"[ProctorAgent] global terminate emit error: {emit_err}")
+    except Exception as err:
+        print(f"[ProctorAgent] global analysis error: {err}")
+
+
+@router.post("/global-tests/proctoring/log")
+async def log_global_proctoring_event(body: GlobalProctoringLog):
+    await _ensure_global_proctor_table()
+    severity = _normalize_severity(body.severity)
+
+    pool = await get_pool()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                cols = await _get_table_columns(cur, "global_proctoring_logs")
+                session_col = "session_id" if "session_id" in cols else ("attempt_id" if "attempt_id" in cols else None)
+                if not session_col:
+                    raise HTTPException(500, "global_proctoring_logs is missing session_id/attempt_id column")
+
+                values_map = {
+                    session_col: body.sessionId,
+                    "event_type": body.eventType,
+                    "severity": severity,
+                    "details": json.dumps(body.details if body.details is not None else ""),
+                }
+                if "user_id" in cols:
+                    values_map["user_id"] = body.userId
+                if "test_id" in cols:
+                    values_map["test_id"] = body.testId or ""
+
+                insert_cols = list(values_map.keys())
+                placeholders = ", ".join(["%s"] * len(insert_cols))
+                col_sql = ", ".join(insert_cols)
+                await cur.execute(
+                    f"INSERT INTO global_proctoring_logs ({col_sql}) VALUES ({placeholders})",
+                    tuple(values_map[c] for c in insert_cols),
+                )
+            await conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to write global proctor log: {str(e)}")
+
+    # If AI proctoring is disabled for this test/session, keep rule-based-only behavior.
+    if not body.aiEnabled:
+        return {"success": True, "agentTriggered": False, "fallbackMode": "rule_based"}
+
+    _global_agent_counter[body.sessionId] = _global_agent_counter.get(body.sessionId, 0) + 1
+    should_trigger = (
+        severity in _GLOBAL_AGENT_TRIGGER_SEVERITIES
+        or _global_agent_counter[body.sessionId] % _GLOBAL_AGENT_INTERVAL == 0
+    )
+    if should_trigger:
+        asyncio.create_task(_maybe_trigger_global_agent(body.sessionId, body.userId))
+
+    return {"success": True, "agentTriggered": should_trigger, "fallbackMode": "rule_based"}
 
 
 def _normalize_section_config(raw: Any, fallback_duration: int) -> Optional[dict]:

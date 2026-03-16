@@ -1,0 +1,9 @@
+{
+  "userId": "student-085",
+  "sessionId": "smoke_1773645079",
+  "testId": "e9ef15ea-1a99-4818-b329-18c24fbcbf43",
+  "eventType": "smoke_test_event",
+  "severity": "medium",
+  "details": {"note": "manual smoke", "count": 1},
+  "aiEnabled": false
+}

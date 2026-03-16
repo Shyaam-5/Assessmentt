@@ -8,9 +8,10 @@ import json
 import math
 import random
 import re
+import asyncio
 from typing import Any
 
-import httpx
+from groq import Groq
 from config import settings
 
 # ─── Topic pools for variety ───────────────────────────────────────────
@@ -46,46 +47,45 @@ def _pick_random(arr: list, n: int) -> list:
 async def cerebras_chat(
     messages: list[dict],
     *,
-    model: str = "gpt-oss-120b",
+    model: str = "openai/gpt-oss-20b",
     temperature: float = 0.7,
     max_tokens: int = 1024,
     response_format: dict | None = None,
 ) -> dict:
-    """Call Cerebras chat completions, rotating through available keys on failure."""
+    """Call Groq chat completions, rotating through available keys on failure."""
 
-    keys = settings.CEREBRAS_API_KEYS
+    keys = settings.GROQ_API_KEYS
     if not keys:
-        raise RuntimeError("No Cerebras API keys configured.")
+        raise RuntimeError("No Groq API keys configured.")
 
     last_error: Exception | None = None
 
     for api_key in keys:
         try:
-            payload: dict = {
+            client = Groq(api_key=api_key)
+
+            create_kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
                 "temperature": temperature,
-                "max_tokens": max_tokens,
+                "max_completion_tokens": max_tokens,
+                "top_p": 1,
+                "stream": False,
+                "stop": None,
             }
             if response_format:
-                payload["response_format"] = response_format
+                create_kwargs["response_format"] = response_format
 
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(
-                    settings.CEREBRAS_API_URL,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
+            # Groq SDK is sync; run call in worker thread from async context.
+            completion = await asyncio.to_thread(
+                client.chat.completions.create,
+                **create_kwargs,
+            )
 
-            if resp.status_code >= 400:
-                print(f"⚠️  API Error ({resp.status_code}) with key …{api_key[-5:]}")
-                last_error = RuntimeError(f"API Error {resp.status_code}: {resp.text}")
-                continue
-
-            return resp.json()
+            data = completion.model_dump() if hasattr(completion, "model_dump") else completion
+            if isinstance(data, dict):
+                return data
+            return dict(data)
 
         except Exception as exc:
             print(f"⚠️  Network error with key …{api_key[-5:]}: {exc}")

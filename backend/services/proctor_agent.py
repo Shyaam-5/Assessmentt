@@ -126,6 +126,13 @@ THRESHOLD_FLAG = 35
 THRESHOLD_CRITICAL = 60
 THRESHOLD_TERMINATE = 65
 
+ACTION_RANK = {
+    "monitor": 0,
+    "warn": 1,
+    "flag_for_review": 2,
+    "terminate": 3,
+}
+
 # ═══════════════════════════════════════════════════════════════
 #  Tools — standalone functions the agent can call
 # ═══════════════════════════════════════════════════════════════
@@ -410,7 +417,25 @@ async def agent_analyze_session(
         event_sample=events[-20:],  # Last 20 events for context
     )
 
-    # ── Step 5: Compose result ──
+    # ── Step 5: Enforce deterministic safety policy (pattern-first) ──
+    ai_action = _normalize_action(ai_analysis.get("recommended_action", ""))
+    score_action = _risk_to_action(score_result.get("risk_level", "clean"))
+    policy_action, policy_reason = _policy_termination_override(summary, patterns, score_result)
+
+    final_action = _max_action(ai_action, score_action)
+    final_action = _max_action(final_action, policy_action)
+
+    final_risk = score_result.get("risk_level", "clean")
+    if final_action == "terminate":
+        final_risk = "terminate"
+
+    if final_action != ai_action:
+        ai_analysis.setdefault("policy_override", True)
+        ai_analysis["policy_action"] = final_action
+        if policy_reason:
+            ai_analysis["policy_reason"] = policy_reason
+
+    # ── Step 6: Compose result ──
     return {
         "session_id": session_id,
         "user_id": user_id,
@@ -420,11 +445,12 @@ async def agent_analyze_session(
         "event_summary": summary["by_type"],
         "severity_breakdown": summary["by_severity"],
         "fraud_score": score_result["fraud_score"],
-        "risk_level": score_result["risk_level"],
+        "risk_level": final_risk,
         "score_components": score_result["components"],
         "patterns_detected": patterns,
         "ai_analysis": ai_analysis,
-        "recommended_action": ai_analysis.get("recommended_action", score_result["risk_level"]),
+        "recommended_action": final_action,
+        "termination_reason": policy_reason if final_action == "terminate" else None,
     }
 
 
@@ -794,7 +820,7 @@ Respond with the JSON format specified in your instructions."""
         print(f"Agent AI reasoning error: {e}")
 
     # Fallback: rule-based reasoning
-    action = fraud_score.get("risk_level", "monitor")
+    action = _risk_to_action(fraud_score.get("risk_level", "clean"))
     return {
         "reasoning": "AI reasoning unavailable — using rule-based assessment.",
         "fraud_assessment": "suspicious" if fraud_score.get("fraud_score", 0) > THRESHOLD_FLAG else "clean",
@@ -804,6 +830,65 @@ Respond with the JSON format specified in your instructions."""
         "key_findings": [f"{len(patterns)} fraud pattern(s) detected"] if patterns else ["No significant patterns"],
         "evidence_summary": f"Session had {summary.get('total_events', 0)} events with fraud score {fraud_score.get('fraud_score', 0)}/100.",
     }
+
+
+def _risk_to_action(risk_level: str) -> str:
+    rl = (risk_level or "clean").strip().lower()
+    if rl in ("terminate",):
+        return "terminate"
+    if rl in ("critical", "flag_for_review"):
+        return "flag_for_review"
+    if rl in ("warn",):
+        return "warn"
+    return "monitor"
+
+
+def _normalize_action(action: str) -> str:
+    a = (action or "").strip().lower()
+    if a in ACTION_RANK:
+        return a
+    if "terminate" in a:
+        return "terminate"
+    if "flag" in a or "review" in a:
+        return "flag_for_review"
+    if "warn" in a:
+        return "warn"
+    return "monitor"
+
+
+def _max_action(a1: str, a2: str) -> str:
+    n1 = _normalize_action(a1)
+    n2 = _normalize_action(a2)
+    return n1 if ACTION_RANK[n1] >= ACTION_RANK[n2] else n2
+
+
+def _policy_termination_override(summary: dict, patterns: list[dict], score_result: dict) -> tuple[str, str | None]:
+    """Hard safety policy: terminate on clear critical fraud signatures.
+
+    This avoids relying solely on LLM phrasing and guarantees decisive action when
+    high-confidence cheating patterns are detected.
+    """
+    by_type = summary.get("by_type", {}) if isinstance(summary, dict) else {}
+    critical_patterns = [p for p in patterns if p.get("severity") == "critical"]
+    high_conf_critical = [p for p in critical_patterns if float(p.get("confidence", 0)) >= 0.8]
+
+    if by_type.get("devtools_attempt", 0) >= 1:
+        return "terminate", "DevTools attempt detected during proctored exam."
+
+    if by_type.get("phone_detected", 0) >= 3 and (by_type.get("copy_paste", 0) + by_type.get("copy_attempt", 0) + by_type.get("paste_attempt", 0)) >= 1:
+        return "terminate", "Repeated phone usage combined with clipboard misuse."
+
+    if len(high_conf_critical) >= 1 and (by_type.get("multiple_people", 0) >= 1 or by_type.get("multiple_faces", 0) >= 1):
+        return "terminate", "High-confidence critical pattern with multi-person evidence."
+
+    if len(critical_patterns) >= 2:
+        names = ", ".join(sorted({p.get("pattern", "unknown") for p in critical_patterns})[:3])
+        return "terminate", f"Multiple critical fraud patterns detected ({names})."
+
+    if float(score_result.get("fraud_score", 0)) >= THRESHOLD_TERMINATE:
+        return "terminate", f"Fraud score exceeded terminate threshold ({score_result.get('fraud_score')}/{THRESHOLD_TERMINATE})."
+
+    return "monitor", None
 
 
 def _parse_ts(ts_str: str) -> datetime | None:
