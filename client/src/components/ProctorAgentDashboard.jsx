@@ -1115,6 +1115,14 @@ function IntegrityReportCard({ data }) {
 
 function AnalysisDetailModal({ data, onClose, onTerminate }) {
     const fullResult = data.full_result_json || {}
+    const action = String(data.recommended_action || fullResult.recommended_action || '').toLowerCase()
+    const alreadyTerminated =
+        data.risk_level === 'terminate' ||
+        action === 'terminate' ||
+        fullResult.auto_terminated === true
+
+    const canManualTerminate = !alreadyTerminated && (data.risk_level === 'terminate' || data.risk_level === 'critical')
+
     return (
         <div style={{
             position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
@@ -1185,7 +1193,12 @@ function AnalysisDetailModal({ data, onClose, onTerminate }) {
                     <div style={{ fontSize: '0.7rem', color: '#475569' }}>
                         Analyzed at: {data.created_at ? new Date(data.created_at).toLocaleString() : '—'}
                     </div>
-                    {(data.risk_level === 'terminate' || data.risk_level === 'critical') && onTerminate && (
+                    {alreadyTerminated && (
+                        <span style={{ background: '#14532d', color: '#86efac', border: '1px solid #166534', borderRadius: 8, padding: '8px 14px', fontSize: '0.78rem', fontWeight: 700 }}>
+                            Terminated
+                        </span>
+                    )}
+                    {canManualTerminate && onTerminate && (
                         <button onClick={() => { onTerminate(data.session_id, data.user_id, `Analysis #${data.id}: ${data.risk_level}, score ${data.fraud_score}`); onClose() }}
                             style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', fontSize: '0.82rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
                             <Ban size={16} /> Terminate Session

@@ -3326,7 +3326,10 @@ function GlobalTestsAdmin() {
     const handleGenerateQuestions = async () => {
         setIsGenerating(true)
         try {
-            const res = await axios.post(`${API_BASE}/ai/generate-aptitude`, aiPrompt)
+            const res = await axios.post(`${API_BASE}/ai/generate-aptitude`, {
+                ...aiPrompt,
+                section: sectionTab,
+            })
             if (res.data.questions) setGeneratedQuestions(res.data.questions)
         } catch (_) {
             alert('Error generating questions')
@@ -3338,13 +3341,31 @@ function GlobalTestsAdmin() {
         if (generatedQuestions.length === 0) return
         setQuestionsBySection(prev => ({
             ...prev,
-            [sectionTab]: [...(prev[sectionTab] || []), ...generatedQuestions.map(q => ({
-                question: q.question,
-                options: q.options || ['', '', '', ''],
-                correctAnswer: q.correctAnswer ?? 0,
-                category: q.category || 'general',
-                explanation: q.explanation || ''
-            }))]
+            [sectionTab]: [...(prev[sectionTab] || []), ...generatedQuestions.map(q => {
+                const options = Array.isArray(q.options) ? q.options.slice(0, 4) : [q.option_1, q.option_2, q.option_3, q.option_4].filter(Boolean)
+                while (options.length < 4) options.push('')
+
+                let correctAnswer = 0
+                const rawCorrect = q.correctAnswer ?? q.correct_answer
+                if (typeof rawCorrect === 'number') {
+                    correctAnswer = rawCorrect >= 0 && rawCorrect <= 3 ? rawCorrect : 0
+                } else if (typeof rawCorrect === 'string') {
+                    if (/^[0-3]$/.test(rawCorrect.trim())) {
+                        correctAnswer = parseInt(rawCorrect.trim(), 10)
+                    } else {
+                        const idx = options.findIndex(o => String(o).trim() === rawCorrect.trim())
+                        correctAnswer = idx >= 0 ? idx : 0
+                    }
+                }
+
+                return {
+                    question: q.question,
+                    options,
+                    correctAnswer,
+                    category: q.category || sectionTab,
+                    explanation: q.explanation || ''
+                }
+            })]
         }))
         setGeneratedQuestions([])
     }

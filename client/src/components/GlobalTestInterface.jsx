@@ -231,6 +231,13 @@ export default function GlobalTestInterface({ test, user, onClose, onComplete })
                 severity,
                 details: `Violation ${count}/${MAX_VIOLATIONS}`,
                 aiEnabled: aiProctoringEnabled,
+            }).then((res) => {
+                const data = res?.data || {}
+                const action = String(data.agentAction || '').toLowerCase()
+                if (data.terminated || action === 'terminate') {
+                    const reason = data.terminationReason || 'Your test has been terminated by the Proctoring Intelligence Agent due to integrity violations.'
+                    autoTerminateTest(reason)
+                }
             }).catch((err) => {
                 // If AI log endpoint is unavailable, continue strict local rule-based enforcement only.
                 aiProctoringAvailableRef.current = false
