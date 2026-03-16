@@ -3,7 +3,7 @@ import axios from 'axios';
 import Editor from '@monaco-editor/react';
 import { Play, Send, CheckCircle, XCircle, ChevronLeft, ChevronRight, Code2, Loader2 } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const LANGUAGE_OPTIONS = [
     { value: 'python', label: 'Python', monacoId: 'python' },

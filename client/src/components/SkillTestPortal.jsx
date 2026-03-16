@@ -8,7 +8,7 @@ import SkillAIInterview from './SkillAIInterview';
 import SkillTestReport from './SkillTestReport';
 import socketService from '../services/socketService';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function SkillTestPortal({ user }) {
     const [tests, setTests] = useState([]);
