@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { Clock, CheckCircle, XCircle, AlertTriangle, ChevronLeft, ChevronRight, Send, Shield } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function SkillMCQTest({ attemptId, attemptData, onComplete, onFailed }) {
     const [questions, setQuestions] = useState([]);

@@ -4,7 +4,7 @@ import axios from 'axios'
 import socketService from '@/services/socketService'
 import { useCamera, useObjectDetection } from '@/hooks/useProctoring'
 
-const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3000') + '/api'
+const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
 
 // Seeded random shuffle - ensures same student gets same order on refresh
 function seededShuffle(array, seed) {

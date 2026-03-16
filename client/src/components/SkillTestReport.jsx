@@ -9,7 +9,7 @@ import {
     RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Cell, PieChart, Pie
 } from 'recharts';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function SkillTestReport({ attemptId, onBack, initialData = null, isEmbedded = false }) {
     const [data, setData] = useState(initialData);

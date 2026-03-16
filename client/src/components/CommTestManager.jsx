@@ -7,7 +7,7 @@ import {
     Volume2, Brain, ArrowLeft, Mic, BarChart3, Smartphone, Monitor
 } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 // Reusable section card
 const SectionCard = ({ icon, title, subtitle, color, children }) => (

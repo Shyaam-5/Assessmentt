@@ -3,7 +3,7 @@ import axios from 'axios';
 import { Mic, MicOff, Send, CheckCircle, XCircle, MessageSquare, Volume2, VolumeX, Loader2 } from 'lucide-react';
 import AvatarInterviewer from './AvatarInterviewer';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function SkillAIInterview({ attemptId, attemptData, onComplete, onFailed }) {
     const [question, setQuestion] = useState('');

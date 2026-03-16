@@ -8,7 +8,6 @@
  *   ai_proctored — everything in enhanced + camera/audio, TF.js detection, behavior tracking
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
-import socketService from '@/services/socketService'
 
 const MAX_VIOLATIONS = 10
 
@@ -120,8 +119,6 @@ export function useCamera(enabled) {
 
     const initializeCamera = useCallback(async () => {
         try {
-            // Enumerate devices and pick the first local webcam to avoid
-            // Windows defaulting to a connected mobile device camera
             const devices = await navigator.mediaDevices.enumerateDevices()
             const webcam = devices.find(d => d.kind === 'videoinput' && d.deviceId)
             const videoConstraints = webcam?.deviceId
@@ -143,7 +140,6 @@ export function useCamera(enabled) {
         }
     }, [])
 
-    // Camera obstruction check via canvas brightness
     useEffect(() => {
         if (!enabled || !mediaStream) return
         const checkBlocked = () => {
@@ -192,9 +188,12 @@ export function useObjectDetection(enabled, videoRef) {
         if (!enabled) return
         let mounted = true
         let intervalId = null
-        // Cooldown to prevent rapid-fire duplicate alerts
         let lastPhoneAlert = 0
-        const PHONE_COOLDOWN_MS = 8000
+        let lastFaceMissAlert = 0
+        const PHONE_COOLDOWN_MS = 3000   // 3s between phone alerts (was 8s)
+        const FACE_COOLDOWN_MS = 3000    // 3s between face-missing alerts
+        const DETECT_INTERVAL_MS = 800   // Run detection every 800ms (was 1500ms)
+        const CONFIDENCE_THRESHOLD = 0.3 // Lower threshold for better sensitivity (was 0.4)
 
         const loadAndDetect = async () => {
             try {
@@ -205,29 +204,27 @@ export function useObjectDetection(enabled, videoRef) {
                 if (!mounted) return
                 console.log('✅ Object detection model loaded for proctoring')
 
-                // Fast detection interval (1.5s) matching ProctoredCodeEditor
                 intervalId = setInterval(async () => {
                     if (!videoRef.current || videoRef.current.readyState < 2 || !modelRef.current) return
                     try {
                         const preds = await modelRef.current.detect(videoRef.current)
-
-                        // Broader device detection matching ProctoredCodeEditor:
-                        // cell phone, laptop, book, remote — all count as suspicious
                         const deviceClasses = ['cell phone', 'laptop', 'book', 'remote']
-                        const hasDevice = preds.some(p => deviceClasses.includes(p.class) && p.score > 0.4)
-                        const hasFace = preds.some(p => p.class === 'person' && p.score > 0.4)
+                        const hasDevice = preds.some(p => deviceClasses.includes(p.class) && p.score > CONFIDENCE_THRESHOLD)
+                        const hasFace = preds.some(p => p.class === 'person' && p.score > CONFIDENCE_THRESHOLD)
+                        const now = Date.now()
 
-                        if (hasDevice) {
-                            const now = Date.now()
-                            if (now - lastPhoneAlert > PHONE_COOLDOWN_MS) {
-                                lastPhoneAlert = now
-                                phoneRef.current += 1
-                                setPhoneCount(phoneRef.current)
-                            }
+                        if (hasDevice && now - lastPhoneAlert > PHONE_COOLDOWN_MS) {
+                            lastPhoneAlert = now
+                            phoneRef.current += 1
+                            setPhoneCount(phoneRef.current)
                         }
-                        if (!hasFace) { faceRef.current += 1; setFaceMissing(faceRef.current) }
+                        if (!hasFace && now - lastFaceMissAlert > FACE_COOLDOWN_MS) {
+                            lastFaceMissAlert = now
+                            faceRef.current += 1
+                            setFaceMissing(faceRef.current)
+                        }
                     } catch { /* ignore detection errors */ }
-                }, 1500)
+                }, DETECT_INTERVAL_MS)
             } catch (err) { console.error('Object detection model load failed:', err) }
         }
 
@@ -251,13 +248,11 @@ export function useFaceDetection(enabled, videoRef) {
         let mounted = true
         let intervalId = null
 
-        // Cooldowns to prevent rapid alerts
         let lastNoFaceAlert = 0
         let lastMultiFaceAlert = 0
         const COOLDOWN_MS = 8000
-        // Streak-based detection (avoids false positives from single dropped frames)
         let noFaceStreak = 0
-        const NO_FACE_STREAK_THRESHOLD = 4  // ~8s at 2s interval
+        const NO_FACE_STREAK_THRESHOLD = 4
 
         const loadAndDetect = async () => {
             try {
@@ -280,7 +275,7 @@ export function useFaceDetection(enabled, videoRef) {
                                 lastNoFaceAlert = now
                                 noFaceRef.current += 1
                                 setNoFaceCount(noFaceRef.current)
-                                noFaceStreak = 0  // reset after firing
+                                noFaceStreak = 0
                             }
                         } else {
                             noFaceStreak = 0
@@ -307,7 +302,7 @@ export function useFaceDetection(enabled, videoRef) {
 export function useBehaviorTracking(enabled, userId, testId) {
     const behaviorSessionId = useRef(`beh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
     const eventsBuffer = useRef([])
-    const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3000') + '/api'
+    const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
 
     const flush = useCallback(async () => {
         if (eventsBuffer.current.length === 0) return
@@ -335,7 +330,6 @@ export function useBehaviorTracking(enabled, userId, testId) {
         const onFocus = track('focus')
         const onBlurEv = track('blur')
 
-        // Throttle mouse moves
         let lastMove = 0
         const throttledMove = (e) => { if (Date.now() - lastMove > 2000) { lastMove = Date.now(); onMove(e) } }
 
@@ -365,16 +359,20 @@ export function useAgentTermination(enabled, userId, sessionId, onTerminate) {
 
     useEffect(() => {
         if (!enabled) return
-        // Use socketService directly (matches ProctoredCodeEditor pattern)
-        socketService.connect()
-        if (userId && sessionId) socketService.joinStudentSession(userId, sessionId)
-        socketService.onAgentTerminate((data) => {
-            console.error('[ProctorAgent] TEST TERMINATED BY AGENT:', data)
-            setAgentTerminated(true)
-            setTerminateReason(data?.reason || 'Test terminated by proctor.')
-            onTerminate?.(data)
+        // Lazy-load socketService to avoid module initialization conflicts
+        let cleanup = () => {}
+        import('@/services/socketService').then(({ default: socketService }) => {
+            socketService.connect()
+            if (userId && sessionId) socketService.joinStudentSession(userId, sessionId)
+            socketService.onAgentTerminate((data) => {
+                console.error('[ProctorAgent] TEST TERMINATED BY AGENT:', data)
+                setAgentTerminated(true)
+                setTerminateReason(data?.reason || 'Test terminated by proctor.')
+                onTerminate?.(data)
+            })
+            cleanup = () => socketService.removeListener('agent_terminate')
         })
-        return () => socketService.removeListener('agent_terminate')
+        return () => cleanup()
     }, [enabled, userId, sessionId, onTerminate])
 
     return { agentTerminated, terminateReason }

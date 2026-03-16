@@ -21,7 +21,7 @@ import {
 } from 'lucide-react'
 import axios from 'axios'
 
-const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3000') + '/api'
+const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api'
 
 // Format session ID as: user@email.com (last4) for admin readability
 const formatSessionId = (session_id, user_id) => {
