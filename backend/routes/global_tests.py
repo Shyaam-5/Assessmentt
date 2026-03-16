@@ -8,6 +8,7 @@ Proctoring modes:
                    detection via TF.js, behavior agent, AI fraud analysis
 """
 
+import asyncio
 import json
 import re
 import uuid
@@ -817,14 +818,87 @@ async def get_questions(test_id: str, section: Optional[str] = None):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Proctoring Event Logging
+#  Proctoring Event Logging + Real-Time Agent Analysis
 # ═══════════════════════════════════════════════════════════════════
+
+# ── Agent analysis event counter (per session, in-memory) ──
+_global_agent_event_counter: dict[str, int] = {}
+_GLOBAL_AGENT_TRIGGER_INTERVAL = 5  # run agent every N events
+_GLOBAL_AGENT_TRIGGER_SEVERITIES = {"high", "critical"}  # always trigger on these
+
+
+async def _maybe_trigger_global_agent(session_id: str, severity: str, user_id: str = ""):
+    """Fire-and-forget agent analysis on accumulated proctoring events.
+
+    Mirrors the pipeline in communication.py — runs the Proctor Intelligence
+    Agent and optionally the Behavior Agent, emitting socket events when
+    the agent recommends termination.
+    """
+    try:
+        from services.proctor_agent import agent_analyze_session, save_analysis
+        result = await agent_analyze_session(session_id, "global", user_id=user_id)
+        if result.get("fraud_score", 0) > 0:
+            await save_analysis({**result, "source": "global"})
+            # Emit real-time alert to admins if score is concerning
+            if result.get("fraud_score", 0) >= 35:
+                try:
+                    from main import sio
+                    await sio.emit("agent_alert", {
+                        "type": "agent_analysis",
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "fraud_score": result["fraud_score"],
+                        "risk_level": result.get("risk_level"),
+                        "recommended_action": result.get("recommended_action"),
+                    }, room="admin_room")
+                except Exception:
+                    pass
+
+            # AUTO-TERMINATE: If agent recommends termination, notify the student
+            if result.get("recommended_action") == "terminate" or result.get("risk_level") == "terminate":
+                try:
+                    from main import sio
+                    terminate_payload = {
+                        "session_id": session_id,
+                        "reason": "Proctoring Intelligence Agent detected critical integrity violations.",
+                        "fraud_score": result["fraud_score"],
+                        "risk_level": result.get("risk_level"),
+                        "key_findings": result.get("ai_analysis", {}).get("key_findings", []),
+                    }
+                    await sio.emit("agent_terminate", terminate_payload, room=f"session_{session_id}")
+                    if user_id:
+                        await sio.emit("agent_terminate", terminate_payload, room=f"student_{user_id}")
+                    # Also notify admins about the termination
+                    await sio.emit("agent_alert", {
+                        "type": "auto_terminate",
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "fraud_score": result["fraud_score"],
+                        "risk_level": "terminate",
+                        "recommended_action": "terminate",
+                    }, room="admin_room")
+                    print(f"[ProctorAgent/Global] AUTO-TERMINATE sent for session {session_id} (score: {result['fraud_score']})")
+                except Exception as e:
+                    print(f"[ProctorAgent/Global] terminate emit error: {e}")
+
+        # Also trigger behavior analysis for a richer integrity picture
+        try:
+            from services.behavior_agent import agent_analyze_behavior
+            await agent_analyze_behavior(session_id, user_id=user_id)
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[ProctorAgent/Global] background analysis error: {e}")
+
 
 @router.post("/global-tests/{test_id}/log-proctoring")
 async def log_proctoring_event(test_id: str, body: dict):
     """Log a single proctoring event for a global test session.
 
     Body: { sessionId, userId, eventType, severity?, details? }
+
+    After logging, triggers the Proctor Intelligence Agent on high/critical
+    severity events or every 5th event, matching the communication assessment.
     """
     session_id = body.get("sessionId") or body.get("session_id", "")
     user_id = body.get("userId") or body.get("user_id", "")
@@ -850,6 +924,16 @@ async def log_proctoring_event(test_id: str, body: dict):
                     ),
                 )
             await conn.commit()
+
+        # ── Trigger Proctor Intelligence Agent (background, non-blocking) ──
+        _global_agent_event_counter[session_id] = _global_agent_event_counter.get(session_id, 0) + 1
+        should_trigger = (
+            severity in _GLOBAL_AGENT_TRIGGER_SEVERITIES
+            or _global_agent_event_counter[session_id] % _GLOBAL_AGENT_TRIGGER_INTERVAL == 0
+        )
+        if should_trigger:
+            asyncio.create_task(_maybe_trigger_global_agent(session_id, severity, user_id))
+
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(500, f"Failed to log proctoring event: {e}")
