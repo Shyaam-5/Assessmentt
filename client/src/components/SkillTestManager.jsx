@@ -438,6 +438,7 @@ export default function SkillTestManager() {
 
                         {/* Proctoring Options Grid */}
                         {form.proctoring_enabled && (
+                            <>
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '10px' }}>
                                 {[
                                     { key: 'camera', label: 'Camera', desc: 'Webcam monitoring', icon: <Camera size={16} />, color: '#3b82f6' },
@@ -490,6 +491,7 @@ export default function SkillTestManager() {
                                     suffix="Auto-terminate threshold"
                                 />
                             </div>
+                            </>
                         )}
                     </SectionCard>
 
