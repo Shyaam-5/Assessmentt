@@ -778,6 +778,25 @@ async def _ai_reason(
     event_sample: list[dict],
 ) -> dict:
     """Use Cerebras AI to reason about the proctoring data in a ReAct step."""
+    ai_error: str | None = None
+    # Keep payload compact so AI calls do not fail on oversized event details.
+    compact_events: list[dict[str, Any]] = []
+    for e in event_sample[-12:]:
+        details = e.get("details")
+        if isinstance(details, dict):
+            detail_text = json.dumps(details, default=str)
+        else:
+            detail_text = str(details or "")
+        if len(detail_text) > 240:
+            detail_text = detail_text[:240] + "..."
+
+        compact_events.append({
+            "event_type": e.get("event_type"),
+            "severity": e.get("severity"),
+            "created_at": e.get("created_at"),
+            "details": detail_text,
+        })
+
     user_prompt = f"""Analyze this exam session's proctoring data:
 
 Candidate: {user_id}
@@ -792,8 +811,8 @@ DETECTED FRAUD PATTERNS:
 COMPUTED FRAUD SCORE:
 {json.dumps(fraud_score, indent=2, default=str)}
 
-RECENT EVENTS (last 20):
-{json.dumps(event_sample, indent=2, default=str)}
+RECENT EVENTS (last up to 12, compacted):
+{json.dumps(compact_events, indent=2, default=str)}
 
 Based on this evidence, provide your analysis. Consider:
 1. What story do these events tell? Is there a pattern of deliberate cheating?
@@ -810,19 +829,55 @@ Respond with the JSON format specified in your instructions."""
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.2,
-            max_tokens=2048,
+            max_tokens=900,
+            response_format={"type": "json_object"},
         )
         content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
         parsed = parse_json(content)
-        if parsed:
+        if isinstance(parsed, dict):
+            # Normalize minimum expected fields so downstream UI stays stable.
+            parsed.setdefault("reasoning", "")
+            parsed.setdefault("fraud_assessment", "suspicious" if fraud_score.get("fraud_score", 0) >= THRESHOLD_FLAG else "clean")
+            parsed.setdefault("confidence", 0.7)
+            parsed.setdefault("recommended_action", _risk_to_action(fraud_score.get("risk_level", "clean")))
+            parsed.setdefault("warning_message", None)
+            parsed.setdefault("key_findings", [])
+            parsed.setdefault("evidence_summary", "")
             return parsed
+
+        # If model replied with plain text instead of JSON, still preserve AI reasoning text.
+        if isinstance(content, str) and content.strip():
+            c = content.strip()
+            lower = c.lower()
+            action = _risk_to_action(fraud_score.get("risk_level", "clean"))
+            if "terminate" in lower:
+                action = "terminate"
+            elif "flag_for_review" in lower or "flag" in lower or "review" in lower:
+                action = "flag_for_review"
+            elif "warn" in lower or "warning" in lower:
+                action = "warn"
+
+            return {
+                "reasoning": c,
+                "fraud_assessment": "likely_fraud" if fraud_score.get("fraud_score", 0) >= THRESHOLD_CRITICAL else "suspicious",
+                "confidence": 0.65,
+                "recommended_action": action,
+                "warning_message": None,
+                "key_findings": [f"{len(patterns)} fraud pattern(s) detected"] if patterns else ["No significant patterns"],
+                "evidence_summary": f"Session had {summary.get('total_events', 0)} events with fraud score {fraud_score.get('fraud_score', 0)}/100.",
+            }
     except Exception as e:
         print(f"Agent AI reasoning error: {e}")
+        ai_error = str(e)
 
     # Fallback: rule-based reasoning
     action = _risk_to_action(fraud_score.get("risk_level", "clean"))
+    reason = "AI reasoning unavailable — using rule-based assessment."
+    if ai_error:
+        reason = f"{reason} (model error: {ai_error[:180]})"
+
     return {
-        "reasoning": "AI reasoning unavailable — using rule-based assessment.",
+        "reasoning": reason,
         "fraud_assessment": "suspicious" if fraud_score.get("fraud_score", 0) > THRESHOLD_FLAG else "clean",
         "confidence": 0.5,
         "recommended_action": action,

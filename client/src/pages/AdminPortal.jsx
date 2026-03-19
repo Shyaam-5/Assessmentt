@@ -3031,7 +3031,8 @@ function GlobalTestsAdmin() {
                 question: q.question,
                 starterCode: q.starterCode || '',
                 testCases: q.testCases || { language: 'Python', cases: [] },
-                points: q.points ?? 10
+                points: q.points ?? 10,
+                timeLimit: q.timeLimit ?? q.time_limit ?? 0
             }))
         }
         if (section === 'sql') {
@@ -3088,20 +3089,52 @@ function GlobalTestsAdmin() {
 
     const addGeneratedCodingToSection = () => {
         if (generatedCodingProblems.length === 0) return
-        const newProblems = generatedCodingProblems.map(p => ({
-            questionType: 'coding',
-            question: p.question,
-            starterCode: p.starterCode || '',
-            solutionCode: p.solutionCode || '',
-            language: p.language || codingAiPrompt.language,
-            testCases: {
-                language: p.language || codingAiPrompt.language,
-                cases: Array.isArray(p.testCases) ? p.testCases : (p.testCases?.cases || [])
-            },
-            hints: p.hints || [],
-            explanation: p.explanation || '',
-            points: 10
-        }))
+        const newProblems = generatedCodingProblems.map(p => {
+            const language = p.language || codingAiPrompt.language
+            const question = p.question || [p.title, p.description].filter(Boolean).join('\n\n') || `Write a ${language} program for ${codingAiPrompt.topic}`
+
+            const starterRaw = p.starterCode ?? p.starter_code ?? ''
+            let starterCode = ''
+            if (starterRaw && typeof starterRaw === 'object') {
+                const lk = String(language).toLowerCase()
+                const key = lk === 'c++' ? 'cpp' : lk
+                starterCode = starterRaw[key] || starterRaw.python || ''
+            } else {
+                starterCode = starterRaw || ''
+            }
+
+            let rawCases = p.testCases ?? p.test_cases ?? []
+            if (rawCases && typeof rawCases === 'object' && !Array.isArray(rawCases)) {
+                rawCases = rawCases.cases || []
+            }
+            const cases = (Array.isArray(rawCases) ? rawCases : []).map(tc => ({
+                input: tc?.input || '',
+                expected_output: tc?.expected_output || tc?.expectedOutput || ''
+            })).filter(tc => tc.input || tc.expected_output)
+
+            if (cases.length === 0 && (p.sample_input || p.sampleInput || p.sample_output || p.sampleOutput)) {
+                cases.push({
+                    input: p.sample_input || p.sampleInput || '',
+                    expected_output: p.sample_output || p.sampleOutput || ''
+                })
+            }
+
+            return {
+                questionType: 'coding',
+                question,
+                starterCode,
+                solutionCode: p.solutionCode || p.solution_code || '',
+                language,
+                testCases: {
+                    language,
+                    cases
+                },
+                hints: Array.isArray(p.hints) ? p.hints : [],
+                explanation: p.explanation || p.description || '',
+                points: 10,
+                timeLimit: p.timeLimit || p.time_limit_seconds || 0
+            }
+        })
         setQuestionsBySection(prev => ({
             ...prev,
             coding: [...(prev.coding || []), ...newProblems]
@@ -3905,8 +3938,14 @@ function GlobalTestsAdmin() {
                                                         </div>
                                                         {generatedCodingProblems.map((p, i) => (
                                                             <div key={i} style={{ padding: '0.75rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', marginTop: '0.5rem' }}>
-                                                                <p style={{ margin: '0 0 0.5rem', fontWeight: 500, color: 'white' }}>{p.question?.substring(0, 150)}...</p>
-                                                                <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>{p.testCases?.length || 0} test cases</span>
+                                                                <p style={{ margin: '0 0 0.5rem', fontWeight: 500, color: 'white' }}>{(p.question || p.title || p.description || 'Generated coding problem').substring(0, 150)}...</p>
+                                                                <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>
+                                                                    {(Array.isArray(p.testCases)
+                                                                        ? p.testCases.length
+                                                                        : (Array.isArray(p.test_cases)
+                                                                            ? p.test_cases.length
+                                                                            : (p.testCases?.cases?.length || 0)))} test cases
+                                                                </span>
                                                             </div>
                                                         ))}
                                                     </div>

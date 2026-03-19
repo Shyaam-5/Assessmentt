@@ -10,6 +10,30 @@ import socketService from '../services/socketService';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
+const DEFAULT_SKILL_PROCTORING = {
+    camera: true,
+    mic: true,
+    fullscreen: true,
+    paste_disabled: true,
+    face_detection: true,
+    camera_block_detect: true,
+    phone_detect: true,
+    enable_ai_agent: true,
+    max_violations: 10,
+};
+
+function normalizeSkillProctoringConfig(raw) {
+    const cfg = (raw && typeof raw === 'object') ? raw : {};
+    const maxRaw = Number(cfg.max_violations ?? cfg.maxViolations ?? DEFAULT_SKILL_PROCTORING.max_violations);
+    const maxViolations = Number.isFinite(maxRaw) ? Math.max(1, Math.min(50, Math.floor(maxRaw))) : DEFAULT_SKILL_PROCTORING.max_violations;
+    return {
+        ...DEFAULT_SKILL_PROCTORING,
+        ...cfg,
+        max_violations: maxViolations,
+        enable_ai_agent: cfg.enable_ai_agent !== false,
+    };
+}
+
 export default function SkillTestPortal({ user }) {
     const [tests, setTests] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -65,6 +89,11 @@ export default function SkillTestPortal({ user }) {
         loadProctoringModel();
     }, []);
 
+    const activeProctorCfg = normalizeSkillProctoringConfig(attemptData?.proctoring_config);
+    const proctoringEnabled = attemptData?.proctoring_enabled !== false;
+    const aiProctoringEnabled = proctoringEnabled && activeProctorCfg.enable_ai_agent !== false;
+    const maxViolationsAllowed = proctoringEnabled ? (activeProctorCfg.max_violations || MAX_VIOLATIONS) : Number.MAX_SAFE_INTEGER;
+
     // ── Finalize attempt as terminated on the backend ──
     const terminateAttempt = useCallback(async (reason) => {
         if (terminatedRef.current) return;
@@ -83,17 +112,33 @@ export default function SkillTestPortal({ user }) {
 
     // ── Agent terminate listener — receives real-time kill signal from Proctor Agent ──
     useEffect(() => {
-        if (!activeAttempt || !user?.id) return;
+        if (!activeAttempt || !user?.id || !aiProctoringEnabled) return;
         socketService.connect();
-        socketService.joinStudentSession(user.id, String(activeAttempt));
+
+        if (typeof socketService.joinStudentSession === 'function') {
+            socketService.joinStudentSession(user.id, String(activeAttempt));
+        } else {
+            // Fallback for runtime module shape drift/hot-reload edge cases.
+            socketService.emit?.('join_student_session', { studentId: user.id, sessionId: String(activeAttempt) });
+        }
 
         const handleTerminate = (data) => {
             console.error('[ProctorAgent] SKILL TEST TERMINATED BY AGENT:', data);
             terminateAttempt(data?.reason || 'Your test has been terminated by the Proctoring Intelligence Agent due to integrity violations.');
         };
-        socketService.onAgentTerminate(handleTerminate);
-        return () => { socketService.removeListener('agent_terminate'); };
-    }, [activeAttempt, user?.id, terminateAttempt]);
+        if (typeof socketService.onAgentTerminate === 'function') {
+            socketService.onAgentTerminate(handleTerminate);
+        } else {
+            socketService.on?.('agent_terminate', handleTerminate);
+        }
+        return () => {
+            if (typeof socketService.removeListener === 'function') {
+                socketService.removeListener('agent_terminate');
+            } else if (socketService.socket?.off) {
+                socketService.socket.off('agent_terminate', handleTerminate);
+            }
+        };
+    }, [activeAttempt, user?.id, terminateAttempt, aiProctoringEnabled]);
 
     const loadProctoringModel = async () => {
         try {
@@ -149,13 +194,13 @@ export default function SkillTestPortal({ user }) {
         const handleFSChange = () => {
             const isFull = !!document.fullscreenElement;
             setIsFullscreen(isFull);
-            if (!isFull && activeAttempt && currentView !== 'list' && currentView !== 'report') {
+            if (!isFull && activeAttempt && currentView !== 'list' && currentView !== 'report' && proctoringEnabled && activeProctorCfg.fullscreen) {
                 logProctoringRef.current?.('fullscreen_exit', 'Student exited fullscreen mode', 'high');
             }
         };
         document.addEventListener('fullscreenchange', handleFSChange);
         return () => document.removeEventListener('fullscreenchange', handleFSChange);
-    }, [activeAttempt, currentView]);
+    }, [activeAttempt, currentView, proctoringEnabled, activeProctorCfg.fullscreen]);
 
     const showViolationWarning = useCallback((title, message, severity) => {
         setViolationWarning({ title, message, severity });
@@ -164,13 +209,23 @@ export default function SkillTestPortal({ user }) {
     }, []);
 
     const logProctoring = useCallback(async (eventType, details, severity = 'medium') => {
-        if (!activeAttempt || attemptData?.proctoring_enabled === false || terminatedRef.current) return;
+        if (!activeAttempt || !proctoringEnabled || terminatedRef.current) return;
         try {
-            await axios.post(`${API}/api/skill-tests/proctoring/log`, {
+            const res = await axios.post(`${API}/api/skill-tests/proctoring/log`, {
                 attemptId: activeAttempt,
                 testStage: currentView,
-                eventType, details, severity
+                eventType, details, severity,
+                userId: user?.id || user?.email || '',
+                aiEnabled: aiProctoringEnabled,
             });
+
+            const data = res?.data || {};
+            const action = String(data.agentAction || '').toLowerCase();
+            if (data.terminated || action === 'terminate') {
+                terminateAttempt(data.terminationReason || 'Your test has been terminated by the Proctoring Intelligence Agent due to integrity violations.');
+                return;
+            }
+
             // Emit to Socket.IO for live monitoring
             socketService.emitProctoringViolation(
                 user?.id, user?.name || user?.email || 'Student',
@@ -185,9 +240,9 @@ export default function SkillTestPortal({ user }) {
                     phoneDetections: eventType === 'phone_detected' ? prev.phoneDetections + 1 : prev.phoneDetections,
                     cameraBlocks: eventType === 'camera_blocked' ? prev.cameraBlocks + 1 : prev.cameraBlocks,
                 };
-                // Auto-terminate at MAX_VIOLATIONS
-                if (next.violationCount >= MAX_VIOLATIONS && !terminatedRef.current) {
-                    terminateAttempt(`Maximum proctoring violations reached (${next.violationCount}/${MAX_VIOLATIONS}). Your test has been automatically terminated.`);
+                // Auto-terminate at configured threshold
+                if (next.violationCount >= maxViolationsAllowed && !terminatedRef.current) {
+                    terminateAttempt(`Maximum proctoring violations reached (${next.violationCount}/${maxViolationsAllowed}). Your test has been automatically terminated.`);
                 }
                 return next;
             });
@@ -200,7 +255,7 @@ export default function SkillTestPortal({ user }) {
             const wm = warningMessages[eventType] || { title: '⚠️ Violation!', msg: details };
             showViolationWarning(wm.title, wm.msg, severity);
         } catch { }
-    }, [activeAttempt, currentView, attemptData, showViolationWarning, terminateAttempt]);
+    }, [activeAttempt, currentView, showViolationWarning, terminateAttempt, user?.id, user?.email, user?.name, proctoringEnabled, aiProctoringEnabled, maxViolationsAllowed]);
 
     useEffect(() => {
         logProctoringRef.current = logProctoring;
@@ -208,44 +263,61 @@ export default function SkillTestPortal({ user }) {
 
     // Block Copy/Paste/Right-click
     useEffect(() => {
-        if (!activeAttempt || currentView === 'list' || currentView === 'report' || attemptData?.proctoring_enabled === false) return;
-        const preventEvent = (e) => { e.preventDefault(); };
-        window.addEventListener('copy', preventEvent);
-        window.addEventListener('paste', preventEvent);
-        window.addEventListener('cut', preventEvent);
-        window.addEventListener('contextmenu', preventEvent);
-        return () => {
-            window.removeEventListener('copy', preventEvent);
-            window.removeEventListener('paste', preventEvent);
-            window.removeEventListener('cut', preventEvent);
-            window.removeEventListener('contextmenu', preventEvent);
+        if (!activeAttempt || currentView === 'list' || currentView === 'report' || !proctoringEnabled || !activeProctorCfg.paste_disabled) return;
+        const preventEvent = (e) => {
+            e.preventDefault();
+            const eventName = `${e?.type || 'clipboard'}_attempt`;
+            const sev = e?.type === 'paste' ? 'high' : 'medium';
+            logProctoringRef.current?.(eventName, `Blocked ${e?.type || 'clipboard'} action`, sev);
         };
-    }, [activeAttempt, currentView, attemptData]);
+        const keyBlock = (e) => {
+            if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === 'v') {
+                e.preventDefault();
+                logProctoringRef.current?.('paste_attempt', 'Blocked keyboard paste shortcut', 'high');
+            }
+            if (e.shiftKey && e.key === 'Insert') {
+                e.preventDefault();
+                logProctoringRef.current?.('paste_attempt', 'Blocked Shift+Insert paste shortcut', 'high');
+            }
+        };
+        window.addEventListener('copy', preventEvent, true);
+        window.addEventListener('paste', preventEvent, true);
+        window.addEventListener('cut', preventEvent, true);
+        window.addEventListener('contextmenu', preventEvent, true);
+        window.addEventListener('keydown', keyBlock, true);
+        return () => {
+            window.removeEventListener('copy', preventEvent, true);
+            window.removeEventListener('paste', preventEvent, true);
+            window.removeEventListener('cut', preventEvent, true);
+            window.removeEventListener('contextmenu', preventEvent, true);
+            window.removeEventListener('keydown', keyBlock, true);
+        };
+    }, [activeAttempt, currentView, proctoringEnabled, activeProctorCfg.paste_disabled]);
 
     // Tab switch / visibility change detection
     useEffect(() => {
         const handleVisibility = () => {
-            if (document.hidden && activeAttempt && currentView !== 'list' && currentView !== 'report') {
+            if (document.hidden && activeAttempt && currentView !== 'list' && currentView !== 'report' && proctoringEnabled) {
                 logProctoringRef.current?.('tab_switch', 'Student switched tabs or minimized window', 'high');
             }
         };
         document.addEventListener('visibilitychange', handleVisibility);
         return () => document.removeEventListener('visibilitychange', handleVisibility);
-    }, [activeAttempt, currentView]);
+    }, [activeAttempt, currentView, proctoringEnabled]);
 
     // Window blur detection (separate from visibilitychange – catches Alt+Tab, clicking outside)
     useEffect(() => {
-        if (!activeAttempt || currentView === 'list' || currentView === 'report' || attemptData?.proctoring_enabled === false) return;
+        if (!activeAttempt || currentView === 'list' || currentView === 'report' || !proctoringEnabled) return;
         const handleBlur = () => {
             logProctoringRef.current?.('window_blur', 'Window lost focus (possible Alt+Tab or clicking outside)', 'high');
         };
         window.addEventListener('blur', handleBlur);
         return () => window.removeEventListener('blur', handleBlur);
-    }, [activeAttempt, currentView, attemptData]);
+    }, [activeAttempt, currentView, proctoringEnabled]);
 
     // DevTools blocking
     useEffect(() => {
-        if (!activeAttempt || currentView === 'list' || currentView === 'report' || attemptData?.proctoring_enabled === false) return;
+        if (!activeAttempt || currentView === 'list' || currentView === 'report' || !proctoringEnabled) return;
         const blockDevTools = (e) => {
             if (
                 e.key === 'F12' ||
@@ -260,11 +332,11 @@ export default function SkillTestPortal({ user }) {
         };
         window.addEventListener('keydown', blockDevTools, true);
         return () => window.removeEventListener('keydown', blockDevTools, true);
-    }, [activeAttempt, currentView, attemptData]);
+    }, [activeAttempt, currentView, proctoringEnabled]);
 
     // Multiple monitor detection
     useEffect(() => {
-        if (!activeAttempt || currentView === 'list' || currentView === 'report' || attemptData?.proctoring_enabled === false) return;
+        if (!activeAttempt || currentView === 'list' || currentView === 'report' || !proctoringEnabled) return;
         const checkMonitors = async () => {
             let detected = false;
             // Method 1: screen.isExtended
@@ -290,11 +362,11 @@ export default function SkillTestPortal({ user }) {
         checkMonitors();
         multiMonitorIntervalRef.current = setInterval(checkMonitors, 5000);
         return () => { if (multiMonitorIntervalRef.current) clearInterval(multiMonitorIntervalRef.current); };
-    }, [activeAttempt, currentView, attemptData, multipleMonitors]);
+    }, [activeAttempt, currentView, proctoringEnabled, multipleMonitors]);
 
     // Fullscreen re-enforcement (re-request when student escapes)
     useEffect(() => {
-        if (!activeAttempt || currentView === 'list' || currentView === 'report' || attemptData?.proctoring_enabled === false) return;
+        if (!activeAttempt || currentView === 'list' || currentView === 'report' || !proctoringEnabled || !activeProctorCfg.fullscreen) return;
         const handleFSReinforce = () => {
             if (!document.fullscreenElement && !terminatedRef.current) {
                 setTimeout(() => {
@@ -305,7 +377,7 @@ export default function SkillTestPortal({ user }) {
         };
         document.addEventListener('fullscreenchange', handleFSReinforce);
         return () => document.removeEventListener('fullscreenchange', handleFSReinforce);
-    }, [activeAttempt, currentView, attemptData]);
+    }, [activeAttempt, currentView, proctoringEnabled, activeProctorCfg.fullscreen]);
 
     // Update camera active status
     useEffect(() => {
@@ -314,7 +386,7 @@ export default function SkillTestPortal({ user }) {
 
     // Camera monitoring - detect camera blocked, phones, or multiple people
     useEffect(() => {
-        if (!cameraStream || !activeAttempt || currentView === 'list' || currentView === 'report') {
+        if (!cameraStream || !activeAttempt || currentView === 'list' || currentView === 'report' || !proctoringEnabled) {
             if (monitorIntervalRef.current) {
                 clearInterval(monitorIntervalRef.current);
                 monitorIntervalRef.current = null;
@@ -358,7 +430,7 @@ export default function SkillTestPortal({ user }) {
                         totalBrightness += (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
                     }
                     const avgBrightness = totalBrightness / (data.length / 16);
-                    if (avgBrightness < DARK_THRESHOLD) {
+                    if (activeProctorCfg.camera_block_detect && avgBrightness < DARK_THRESHOLD) {
                         darkFrameCount++;
                         if (darkFrameCount === DARK_FRAMES_TRIGGER) {
                             logProctoringRef.current?.('camera_blocked', 'Camera appears to be covered', 'high');
@@ -383,7 +455,9 @@ export default function SkillTestPortal({ user }) {
                         // Standardized Device Detection (Phone, Remote, Laptop group)
                         // Grouping these as requested by user to count as "Phone" violations
                         const deviceClasses = ['cell phone', 'remote', 'laptop', 'mouse', 'tablet'];
-                        const deviceObj = predictions.find(p => deviceClasses.includes(p.class) && p.score >= 0.40);
+                        const deviceObj = activeProctorCfg.phone_detect
+                            ? predictions.find(p => deviceClasses.includes(p.class) && p.score >= 0.40)
+                            : null;
 
                         if (deviceObj) {
                             const now = Date.now();
@@ -396,9 +470,9 @@ export default function SkillTestPortal({ user }) {
                         }
 
                         // Suspicious objects (books, keyboards outside of student's own)
-                        const suspiciousObjects = predictions.filter(p =>
-                            ['book', 'keyboard'].includes(p.class) && p.score > 0.45
-                        );
+                        const suspiciousObjects = activeProctorCfg.phone_detect
+                            ? predictions.filter(p => ['book', 'keyboard'].includes(p.class) && p.score > 0.45)
+                            : [];
                         if (suspiciousObjects.length > 0) {
                             console.warn('⚠️ Suspicious:', suspiciousObjects.map(o => `${o.class}(${(o.score * 100).toFixed(0)}%)`).join(', '));
                             const now = Date.now();
@@ -410,7 +484,7 @@ export default function SkillTestPortal({ user }) {
 
                         // Multiple people detection
                         const persons = predictions.filter(p => p.class === 'person' && p.score > 0.35);
-                        if (persons.length > 1) {
+                        if (activeProctorCfg.face_detection && persons.length > 1) {
                             logProctoringRef.current?.('phone_detected', `Multiple people detected (${persons.length} persons)`, 'high');
                         }
                     } catch (e) {
@@ -429,7 +503,7 @@ export default function SkillTestPortal({ user }) {
             monitorVideo.pause();
             monitorVideo.srcObject = null;
         };
-    }, [cameraStream, activeAttempt, currentView, model]);
+    }, [cameraStream, activeAttempt, currentView, model, proctoringEnabled, activeProctorCfg.phone_detect, activeProctorCfg.face_detection, activeProctorCfg.camera_block_detect]);
 
     // Cleanup warning timer on unmount
     useEffect(() => {
@@ -456,7 +530,9 @@ export default function SkillTestPortal({ user }) {
     // Start proctoring setup before test
     const initiateTest = (testId) => {
         const test = tests.find(t => t.id === testId);
-        if (test && test.proctoring_enabled === false) {
+        const cfg = normalizeSkillProctoringConfig(test?.proctoring_config);
+        const needsCamera = test && test.proctoring_enabled !== false && cfg.camera !== false;
+        if (!test || test.proctoring_enabled === false || !needsCamera) {
             startTest(testId);
             return;
         }
@@ -469,15 +545,17 @@ export default function SkillTestPortal({ user }) {
     const initiateResume = (attemptId) => {
         // Find if proctoring needed
         let proctoringEnabled = true;
+        let needsCamera = true;
         for (const t of tests) {
             const att = t.my_attempts?.find(a => a.id === attemptId);
             if (att) {
                 if (t.proctoring_enabled === false) proctoringEnabled = false;
+                needsCamera = normalizeSkillProctoringConfig(t.proctoring_config).camera !== false;
                 break;
             }
         }
 
-        if (!proctoringEnabled) {
+        if (!proctoringEnabled || !needsCamera) {
             resumeTest(attemptId);
             return;
         }
@@ -825,7 +903,7 @@ export default function SkillTestPortal({ user }) {
                                         display: 'flex', alignItems: 'center', gap: '4px',
                                         justifyContent: 'center'
                                     }}>
-                                        <AlertTriangle size={10} /> {proctoringStats.violationCount}/{MAX_VIOLATIONS} Violations
+                                        <AlertTriangle size={10} /> {proctoringStats.violationCount}/{maxViolationsAllowed} Violations
                                     </div>
                                 )}
                             </div>

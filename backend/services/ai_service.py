@@ -682,3 +682,415 @@ def _default_report() -> dict:
         "section_feedback": {"mcq": "N/A", "coding": "N/A", "sql": "N/A", "interview": "N/A"},
         "mcq_question_analysis": [],
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  AGENTIC EVALUATION — APTITUDE MODULE
+# ═══════════════════════════════════════════════════════════════════════
+
+async def evaluate_aptitude_submission(
+    test_title: str,
+    question_results: list[dict],
+    score: float,
+    category_breakdown: dict | None = None,
+) -> dict:
+    """AI agent that holistically evaluates an aptitude test submission.
+
+    Returns a rich evaluation including per-category insight, conceptual
+    gap analysis, and a personalised improvement roadmap.
+    """
+    wrong_answers = [
+        {
+            "question": qr.get("question", ""),
+            "category": qr.get("category", "general"),
+            "student_answer": qr.get("userAnswer", ""),
+            "correct_answer": qr.get("correctAnswer", ""),
+            "explanation": qr.get("explanation", ""),
+        }
+        for qr in question_results
+        if not qr.get("isCorrect", False)
+    ]
+
+    correct_count = sum(1 for qr in question_results if qr.get("isCorrect"))
+    total = len(question_results)
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert aptitude assessment coach. Analyse a student's aptitude test results and "
+                "produce a structured evaluation that identifies conceptual gaps, mindset issues, and a "
+                "concrete improvement plan.\n\n"
+                "Return ONLY a valid JSON object with these keys:\n"
+                '- "overall_feedback": string (2-3 sentence executive summary)\n'
+                '- "performance_band": string ("Excellent" | "Good" | "Average" | "Needs Improvement" | "Critical")\n'
+                '- "strengths": array of strings\n'
+                '- "improvement_areas": array of strings\n'
+                '- "per_category_insights": array of objects with {"category", "insight", "tip"}\n'
+                '- "recommended_topics": array of strings (topics to study)\n'
+                '- "wrong_answer_analysis": array of objects with {"question_summary", "likely_misconception", "correct_concept"}\n'
+                '- "study_plan": array of objects with {"week", "focus", "tasks"} for 2 weeks'
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Test: {test_title}\n"
+                f"Score: {round(score)}% ({correct_count}/{total} correct)\n\n"
+                f"Category breakdown: {json.dumps(category_breakdown or {})}\n\n"
+                f"Wrong answers ({len(wrong_answers)}):\n{json.dumps(wrong_answers, indent=2)}\n\n"
+                "Analyse this aptitude test performance. Focus on patterns in wrong answers to identify "
+                "underlying conceptual gaps. Be constructive and specific. Return ONLY valid JSON."
+            ),
+        },
+    ]
+
+    try:
+        response = await _call_cerebras(messages, temperature=0.4, max_tokens=3000)
+        result = parse_json(response)
+        if result and result.get("overall_feedback"):
+            print(f"[EvalAgent] Aptitude evaluation complete – band: {result.get('performance_band')}")
+            return result
+    except Exception as exc:
+        print(f"[EvalAgent] Aptitude evaluation failed: {exc}")
+
+    return {
+        "overall_feedback": f"You scored {round(score)}% ({correct_count}/{total}). Review the incorrect answers to strengthen your aptitude skills.",
+        "performance_band": "Average" if score >= 50 else "Needs Improvement",
+        "strengths": ["Attempted all questions"],
+        "improvement_areas": ["Review incorrect answers", "Practice more aptitude problems"],
+        "per_category_insights": [],
+        "recommended_topics": [],
+        "wrong_answer_analysis": [],
+        "study_plan": [],
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  AGENTIC EVALUATION — GLOBAL TEST MODULE
+# ═══════════════════════════════════════════════════════════════════════
+
+async def evaluate_global_test_submission(
+    test_title: str,
+    section_scores: dict,
+    question_results: list[dict],
+    total_score: float,
+    proctoring_violations: int = 0,
+    time_spent: int = 0,
+) -> dict:
+    """AI agent that evaluates a multi-section global test submission.
+
+    Provides section-level analysis, holistic feedback, and a personalised
+    improvement plan across aptitude, verbal, logical, coding, and SQL sections.
+    """
+    wrong_by_section: dict[str, list] = {}
+    for qr in question_results:
+        if not qr.get("isCorrect", False):
+            sec = qr.get("section", "general")
+            wrong_by_section.setdefault(sec, []).append({
+                "question_summary": (qr.get("question") or "")[:120],
+                "user_answer": qr.get("userAnswer", "")[:80],
+                "correct_answer": qr.get("correctAnswer", "")[:80],
+            })
+
+    time_mins = round(time_spent / 60, 1) if time_spent else 0
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert placement test evaluator. Analyse a candidate's comprehensive global test results "
+                "spanning aptitude, verbal, logical, coding, and SQL sections.\n\n"
+                "Return ONLY a valid JSON object with:\n"
+                '- "overall_feedback": string (executive summary)\n'
+                '- "placement_readiness": string ("Ready" | "Nearly Ready" | "Needs Preparation" | "Not Ready")\n'
+                '- "section_analysis": object with keys for each section — each has {"score", "verdict", "feedback", "tips"}\n'
+                '- "strengths": array of strings\n'
+                '- "weaknesses": array of strings\n'
+                '- "recommended_focus": array of strings (top 3 areas)\n'
+                '- "interview_readiness_notes": string\n'
+                '- "action_plan": array of objects with {"priority" (1-5), "area", "action", "timeline"}\n'
+                '- "proctoring_note": string (comment on behaviour integrity if violations > 0, else empty string)'
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Test: {test_title}\n"
+                f"Overall Score: {round(total_score)}%\n"
+                f"Time Spent: {time_mins} minutes\n"
+                f"Proctoring Violations: {proctoring_violations}\n\n"
+                f"Section Scores: {json.dumps(section_scores)}\n\n"
+                f"Wrong Answers by Section (sample):\n{json.dumps(wrong_by_section, indent=2)[:2000]}\n\n"
+                "Provide a thorough, balanced evaluation. Highlight where the candidate excels and where they "
+                "need focused preparation. Return ONLY valid JSON."
+            ),
+        },
+    ]
+
+    try:
+        response = await _call_cerebras(messages, temperature=0.4, max_tokens=3500)
+        result = parse_json(response)
+        if result and result.get("overall_feedback"):
+            print(f"[EvalAgent] Global test evaluation complete – readiness: {result.get('placement_readiness')}")
+            return result
+    except Exception as exc:
+        print(f"[EvalAgent] Global test evaluation failed: {exc}")
+
+    return {
+        "overall_feedback": f"You scored {round(total_score)}% overall. Review weaker sections and practise regularly.",
+        "placement_readiness": "Needs Preparation" if total_score < 60 else "Nearly Ready",
+        "section_analysis": {
+            sec: {"score": section_scores.get(sec, 0), "verdict": "N/A", "feedback": "Review this section.", "tips": []}
+            for sec in section_scores
+        },
+        "strengths": [],
+        "weaknesses": [],
+        "recommended_focus": [sec for sec, sc in sorted(section_scores.items(), key=lambda x: x[1])[:3]],
+        "interview_readiness_notes": "Focus on strengthening weak areas before interviews.",
+        "action_plan": [],
+        "proctoring_note": f"{proctoring_violations} violations detected." if proctoring_violations > 0 else "",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  AGENTIC EVALUATION — SKILL TEST MCQ ENRICHMENT
+# ═══════════════════════════════════════════════════════════════════════
+
+async def evaluate_mcq_with_ai(
+    questions: list[dict],
+    answers: dict,
+    skills: list[str],
+) -> list[dict]:
+    """Enrich MCQ results with AI-powered per-question conceptual analysis.
+
+    Returns a list of per-question objects: { question_id, concept_gap,
+    misconception, correct_concept, tip, severity }.
+    Only analyses questions that were answered incorrectly.
+    """
+    wrong_questions = []
+    for q in questions:
+        sa = answers.get(str(q.get("id"))) or answers.get(q.get("id"))
+        si = ord(sa.upper()) - 65 if isinstance(sa, str) and len(sa) == 1 and sa.isalpha() else (int(sa) if isinstance(sa, (int, float)) else -1)
+        ci = q.get("correct_answer", -2)
+        if isinstance(ci, str) and len(ci) == 1 and ci.isalpha():
+            ci = ord(ci.upper()) - 65
+        try:
+            ci = int(ci)
+        except Exception:
+            ci = -2
+        if si != ci:
+            opts = q.get("options", [])
+            wrong_questions.append({
+                "id": q.get("id"),
+                "question": q.get("question", ""),
+                "skill": q.get("skill", "General"),
+                "student_answer_index": si,
+                "correct_answer_index": ci,
+                "student_answer_text": opts[si] if 0 <= si < len(opts) else str(sa),
+                "correct_answer_text": opts[ci] if 0 <= ci < len(opts) else str(ci),
+                "explanation": q.get("explanation", ""),
+            })
+
+    if not wrong_questions:
+        return []  # All correct — nothing to enrich
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a technical skill assessment coach. For each wrong MCQ answer, identify:\n"
+                "1. The likely conceptual gap or misconception\n"
+                "2. The correct underlying concept\n"
+                "3. A practical tip to fix it\n"
+                "4. Severity: 'minor' (close miss) | 'moderate' (partial understanding) | 'major' (fundamental gap)\n\n"
+                "Return ONLY a valid JSON array. Each object must have:\n"
+                '- "question_id": number or string\n'
+                '- "concept_gap": string\n'
+                '- "misconception": string\n'
+                '- "correct_concept": string\n'
+                '- "tip": string\n'
+                '- "severity": "minor" | "moderate" | "major"'
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Skills being tested: {', '.join(skills)}\n\n"
+                f"Wrong answers ({len(wrong_questions)}):\n"
+                f"{json.dumps(wrong_questions, indent=2)[:3000]}\n\n"
+                "Analyse each wrong answer and return the enriched feedback array. Return ONLY valid JSON."
+            ),
+        },
+    ]
+
+    try:
+        response = await _call_cerebras(messages, temperature=0.3, max_tokens=3000)
+        result = parse_json(response)
+        if result and isinstance(result, list):
+            print(f"[EvalAgent] MCQ enrichment complete – {len(result)} items")
+            return result
+    except Exception as exc:
+        print(f"[EvalAgent] MCQ enrichment failed: {exc}")
+
+    # Fallback: basic per-question feedback
+    return [
+        {
+            "question_id": wq["id"],
+            "concept_gap": f"Review {wq['skill']} concepts",
+            "misconception": "Answer based on incomplete understanding.",
+            "correct_concept": wq.get("explanation") or "Refer to the explanation for this question.",
+            "tip": f"Study {wq['skill']} fundamentals and practise similar problems.",
+            "severity": "moderate",
+        }
+        for wq in wrong_questions
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  AGENTIC EVALUATION — COMMUNICATION MODULE HOLISTIC REPORT
+# ═══════════════════════════════════════════════════════════════════════
+
+async def evaluate_comm_attempt(
+    module_a_score: float,
+    module_b_score: float,
+    module_c_score: float,
+    module_d_score: float,
+    module_a_data: list | None = None,
+    module_b_data: list | None = None,
+    module_c_data: list | None = None,
+    module_d_data: list | None = None,
+) -> dict:
+    """AI agent that holistically evaluates a full communication test attempt.
+
+    Combines scores and response data from all 4 modules (Read & Speak,
+    Listen & Repeat, Topic Speaking, Grammar Quiz) into a unified report.
+    """
+    overall = (module_a_score + module_b_score + module_c_score + module_d_score) / 4
+
+    module_summary = {
+        "Module A – Read & Speak": {"score": round(module_a_score, 1), "items": len(module_a_data or [])},
+        "Module B – Listen & Repeat": {"score": round(module_b_score, 1), "items": len(module_b_data or [])},
+        "Module C – Topic Speaking": {"score": round(module_c_score, 1), "items": len(module_c_data or [])},
+        "Module D – Grammar Quiz": {"score": round(module_d_score, 1), "items": len(module_d_data or [])},
+    }
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert English language coach specialising in corporate communication skills. "
+                "Evaluate a student's performance across four communication modules and provide a comprehensive "
+                "development report.\n\n"
+                "The modules are:\n"
+                "  A – Read & Speak (pronunciation & reading fluency)\n"
+                "  B – Listen & Repeat (listening comprehension & reproduction accuracy)\n"
+                "  C – Topic Speaking (spontaneous speaking, coherence, vocabulary)\n"
+                "  D – Grammar Quiz (grammar accuracy)\n\n"
+                "Return ONLY a valid JSON object with:\n"
+                '- "overall_band": string ("A+" | "A" | "B" | "C" | "D" | "F")\n'
+                '- "overall_summary": string (2-3 sentence executive summary)\n'
+                '- "fluency_feedback": string\n'
+                '- "pronunciation_feedback": string\n'
+                '- "grammar_feedback": string\n'
+                '- "vocabulary_feedback": string\n'
+                '- "module_insights": object keyed by module name with {"verdict", "feedback", "tips"}\n'
+                '- "strengths": array of strings\n'
+                '- "development_areas": array of strings\n'
+                '- "corporate_readiness": string ("High" | "Medium" | "Low")\n'
+                '- "roadmap": array of objects with {"week" (1-4), "focus", "activities"}'
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Overall Communication Score: {round(overall, 1)}%\n\n"
+                f"Module Scores:\n{json.dumps(module_summary, indent=2)}\n\n"
+                "Provide a detailed but encouraging assessment. Identify which communication skill "
+                "dimension needs the most attention and suggest practical exercises. Return ONLY valid JSON."
+            ),
+        },
+    ]
+
+    try:
+        response = await _call_cerebras(messages, temperature=0.45, max_tokens=3000)
+        result = parse_json(response)
+        if result and result.get("overall_band"):
+            print(f"[EvalAgent] Comm evaluation complete – band: {result.get('overall_band')}")
+            return result
+    except Exception as exc:
+        print(f"[EvalAgent] Comm evaluation failed: {exc}")
+
+    band = "A" if overall >= 85 else ("B" if overall >= 70 else ("C" if overall >= 55 else ("D" if overall >= 40 else "F")))
+    return {
+        "overall_band": band,
+        "overall_summary": f"You achieved an overall communication score of {round(overall, 1)}%. Keep practising regularly.",
+        "fluency_feedback": "Continue practising Read & Speak exercises to improve fluency.",
+        "pronunciation_feedback": "Work on Listen & Repeat exercises to refine pronunciation.",
+        "grammar_feedback": "Review grammar rules and practise fill-in-the-blank exercises.",
+        "vocabulary_feedback": "Expand vocabulary through reading and Topic Speaking practice.",
+        "module_insights": {},
+        "strengths": [],
+        "development_areas": [],
+        "corporate_readiness": "Medium" if overall >= 60 else "Low",
+        "roadmap": [],
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  AGENTIC EVALUATION — GRAMMAR QUIZ MODULE D (per-question AI feedback)
+# ═══════════════════════════════════════════════════════════════════════
+
+async def evaluate_grammar_answers(
+    wrong_answers: list[dict],
+) -> list[dict]:
+    """Generate AI explanations for wrong Grammar Quiz (Module D) answers.
+
+    Each item in wrong_answers should have: sentence, student_answer, correct_answer, category.
+    Returns a list of {question_index, ai_explanation, grammar_rule, example} objects.
+    """
+    if not wrong_answers:
+        return []
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert English grammar teacher. For each incorrectly answered grammar question, "
+                "provide a clear, friendly explanation of why the student's answer is wrong and why the correct "
+                "answer is right. Include the grammar rule and a new example sentence.\n\n"
+                "Return ONLY a valid JSON array. Each object must have:\n"
+                '- "question_index": number or string (from input)\n'
+                '- "ai_explanation": string (friendly 2-3 sentence explanation)\n'
+                '- "grammar_rule": string (the rule that applies)\n'
+                '- "example": string (another example using the same rule)'
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Wrong answers ({len(wrong_answers)}):\n"
+                f"{json.dumps(wrong_answers, indent=2)[:2500]}\n\n"
+                "Explain each mistake kindly and clearly. Return ONLY valid JSON."
+            ),
+        },
+    ]
+
+    try:
+        response = await _call_cerebras(messages, temperature=0.35, max_tokens=2500)
+        result = parse_json(response)
+        if result and isinstance(result, list):
+            print(f"[EvalAgent] Grammar feedback complete – {len(result)} explanations")
+            return result
+    except Exception as exc:
+        print(f"[EvalAgent] Grammar feedback failed: {exc}")
+
+    return [
+        {
+            "question_index": wa.get("question_index", 0),
+            "ai_explanation": f"The correct answer is '{wa.get('correct_answer')}'. Review the {wa.get('category', 'grammar')} rule.",
+            "grammar_rule": f"Review {wa.get('category', 'grammar')} rules.",
+            "example": "",
+        }
+        for wa in wrong_answers
+    ]

@@ -12,13 +12,62 @@ from database import get_pool
 from services.ai_service import (
     generate_mcq_questions, generate_coding_problems, generate_sql_problems,
     generate_interview_question, evaluate_interview_answer, evaluate_sql_query,
-    generate_final_report,
+    generate_final_report, evaluate_mcq_with_ai,
 )
 
 router = APIRouter(prefix="/api/skill-tests", tags=["skill-tests"])
 
 # ── helpers ────────────────────────────────────────────────────────────
 BASE_TABLES = ["employees", "departments", "projects", "orders"]
+
+
+def _default_skill_proctoring_config() -> dict:
+    return {
+        "camera": True,
+        "mic": True,
+        "fullscreen": True,
+        "paste_disabled": True,
+        "face_detection": True,
+        "camera_block_detect": True,
+        "phone_detect": True,
+        "enable_ai_agent": True,
+        "max_violations": 10,
+    }
+
+
+def _to_bool(v: Any, default: bool = False) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("1", "true", "yes", "on", "y"):
+            return True
+        if s in ("0", "false", "no", "off", "n"):
+            return False
+    return default
+
+
+def _normalize_skill_proctoring_config(raw: Any) -> dict:
+    defaults = _default_skill_proctoring_config()
+    cfg = raw if isinstance(raw, dict) else {}
+    out = {**defaults}
+    for k in ("camera", "mic", "fullscreen", "paste_disabled", "face_detection", "camera_block_detect", "phone_detect"):
+        out[k] = _to_bool(cfg.get(k), defaults[k])
+
+    # Backward-compatible aliases
+    out["paste_disabled"] = _to_bool(cfg.get("paste_disabled", cfg.get("disableCopyPaste", out["paste_disabled"])), out["paste_disabled"])
+    out["camera_block_detect"] = _to_bool(cfg.get("camera_block_detect", cfg.get("detectCameraBlocking", out["camera_block_detect"])), out["camera_block_detect"])
+    out["phone_detect"] = _to_bool(cfg.get("phone_detect", cfg.get("detectPhoneUsage", out["phone_detect"])), out["phone_detect"])
+    out["enable_ai_agent"] = _to_bool(cfg.get("enable_ai_agent", cfg.get("enableAIProctoringAgent", cfg.get("aiProctoringAgentEnabled", True))), True)
+
+    try:
+        mv = int(cfg.get("max_violations", cfg.get("maxViolations", defaults["max_violations"])))
+    except Exception:
+        mv = defaults["max_violations"]
+    out["max_violations"] = max(1, min(mv, 50))
+    return out
 
 def _sandbox_names(test_id: int) -> dict[str, str]:
     return {t: f"st{test_id}_{t}" for t in BASE_TABLES}
@@ -29,6 +78,86 @@ def _safe_json(val: Any) -> Any:
 
 def _json_str(val: Any) -> str:
     return json.dumps(val, default=str)
+
+
+async def _get_table_columns(cur, table_name: str) -> set[str]:
+    await cur.execute(f"SHOW COLUMNS FROM {table_name}")
+    rows = await cur.fetchall()
+    cols: set[str] = set()
+    for r in rows:
+        if isinstance(r, dict):
+            cols.add(str(r.get("Field") or "").lower())
+        elif isinstance(r, (list, tuple)) and len(r) > 0:
+            cols.add(str(r[0]).lower())
+    return cols
+
+
+_skill_test_columns_ready = False
+_skill_attempt_columns_ready = False
+_skill_proctor_log_ready = False
+
+
+async def _ensure_skill_test_proctoring_columns():
+    global _skill_test_columns_ready
+    if _skill_test_columns_ready:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            try:
+                await cur.execute("ALTER TABLE skill_tests ADD COLUMN proctoring_enabled TINYINT DEFAULT 1")
+            except Exception:
+                pass
+            try:
+                await cur.execute("ALTER TABLE skill_tests ADD COLUMN proctoring_config JSON NULL")
+            except Exception:
+                pass
+        await conn.commit()
+    _skill_test_columns_ready = True
+
+
+async def _ensure_skill_attempt_proctoring_columns():
+    global _skill_attempt_columns_ready
+    if _skill_attempt_columns_ready:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            try:
+                await cur.execute("ALTER TABLE skill_test_attempts ADD COLUMN mcq_violations INT DEFAULT 0")
+            except Exception:
+                pass
+            try:
+                await cur.execute("ALTER TABLE skill_test_attempts ADD COLUMN mcq_ai_feedback JSON NULL")
+            except Exception:
+                pass
+        await conn.commit()
+    _skill_attempt_columns_ready = True
+
+
+async def _ensure_skill_proctoring_log_table():
+    global _skill_proctor_log_ready
+    if _skill_proctor_log_ready:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS skill_proctoring_logs (
+                    id          INT AUTO_INCREMENT PRIMARY KEY,
+                    attempt_id  VARCHAR(120) NOT NULL,
+                    event_type  VARCHAR(80)  NOT NULL,
+                    severity    VARCHAR(20)  DEFAULT 'low',
+                    details     TEXT,
+                    created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_skill_attempt (attempt_id),
+                    INDEX idx_skill_event (event_type)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+            )
+        await conn.commit()
+    _skill_proctor_log_ready = True
 
 async def _create_sandbox(test_id: int):
     t = _sandbox_names(test_id)
@@ -106,12 +235,25 @@ def _calc_sql_stats(attempt: dict) -> dict:
 
 @router.post("/create")
 async def create_test(body: dict = Body(...)):
+    await _ensure_skill_test_proctoring_columns()
+    proctoring_enabled = _to_bool(body.get("proctoring_enabled"), True)
+    proctoring_config = _normalize_skill_proctoring_config(body.get("proctoring_config"))
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "INSERT INTO skill_tests (title,description,skills,mcq_count,coding_count,sql_count,interview_count,attempt_limit,mcq_duration_minutes,coding_duration_minutes,sql_duration_minutes,interview_duration_minutes,mcq_passing_score,coding_passing_score,sql_passing_score,interview_passing_score) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (body.get("title"), body.get("description"), _json_str(body.get("skills",[])), body.get("mcq_count",10), body.get("coding_count",3), body.get("sql_count",3), body.get("interview_count",5), body.get("attempt_limit",3), body.get("mcq_duration_minutes",30), body.get("coding_duration_minutes",60), body.get("sql_duration_minutes",30), body.get("interview_duration_minutes",30), body.get("mcq_passing_score",60), body.get("coding_passing_score",60), body.get("sql_passing_score",60), body.get("interview_passing_score",5))
+                "INSERT INTO skill_tests (title,description,skills,mcq_count,coding_count,sql_count,interview_count,attempt_limit,mcq_duration_minutes,coding_duration_minutes,sql_duration_minutes,interview_duration_minutes,mcq_passing_score,coding_passing_score,sql_passing_score,interview_passing_score,proctoring_enabled,proctoring_config) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    body.get("title"), body.get("description"), _json_str(body.get("skills",[])),
+                    body.get("mcq_count",10), body.get("coding_count",3), body.get("sql_count",3), body.get("interview_count",5),
+                    body.get("attempt_limit",3), body.get("mcq_duration_minutes",30), body.get("coding_duration_minutes",60),
+                    body.get("sql_duration_minutes",30), body.get("interview_duration_minutes",30),
+                    body.get("mcq_passing_score",60), body.get("coding_passing_score",60), body.get("sql_passing_score",60),
+                    body.get("interview_passing_score",5),
+                    1 if proctoring_enabled else 0,
+                    _json_str(proctoring_config),
+                )
             )
             test_id = cur.lastrowid
         await conn.commit()
@@ -123,12 +265,22 @@ async def create_test(body: dict = Body(...)):
 
 @router.get("/all")
 async def get_all_tests():
+    await _ensure_skill_test_proctoring_columns()
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute("SELECT * FROM skill_tests ORDER BY created_at DESC")
             rows = await cur.fetchall()
-    return [dict(r, skills=_safe_json(r.get("skills"))) for r in rows]
+    out = []
+    for r in rows:
+        cfg = _normalize_skill_proctoring_config(_safe_json(r.get("proctoring_config")))
+        out.append(dict(
+            r,
+            skills=_safe_json(r.get("skills")),
+            proctoring_enabled=_to_bool(r.get("proctoring_enabled"), True),
+            proctoring_config=cfg,
+        ))
+    return out
 
 @router.put("/{test_id}/toggle")
 async def toggle_test(test_id: int):
@@ -169,6 +321,7 @@ async def get_test_attempts(test_id: int):
 
 @router.get("/student/available")
 async def student_available(studentId: str = Query(...)):
+    await _ensure_skill_test_proctoring_columns()
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -178,7 +331,15 @@ async def student_available(studentId: str = Query(...)):
             for t in tests:
                 await cur.execute("SELECT id,attempt_number,overall_status,current_stage,mcq_score,created_at FROM skill_test_attempts WHERE test_id=%s AND student_id=%s ORDER BY attempt_number DESC", (t["id"], studentId))
                 attempts = await cur.fetchall()
-                enriched.append({**t, "skills": _safe_json(t.get("skills")), "attempts_used": len(attempts), "can_attempt": len(attempts) < t["attempt_limit"] and not any(a["overall_status"] == "completed" for a in attempts), "my_attempts": attempts})
+                enriched.append({
+                    **t,
+                    "skills": _safe_json(t.get("skills")),
+                    "proctoring_enabled": _to_bool(t.get("proctoring_enabled"), True),
+                    "proctoring_config": _normalize_skill_proctoring_config(_safe_json(t.get("proctoring_config"))),
+                    "attempts_used": len(attempts),
+                    "can_attempt": len(attempts) < t["attempt_limit"] and not any(a["overall_status"] == "completed" for a in attempts),
+                    "my_attempts": attempts,
+                })
     return enriched
 
 @router.post("/{test_id}/start")
@@ -200,13 +361,24 @@ async def start_attempt(test_id: int, body: dict = Body(...)):
 
 @router.get("/attempt/{attempt_id}")
 async def get_attempt(attempt_id: int):
+    await _ensure_skill_test_proctoring_columns()
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT a.*,t.title as test_title,t.skills as test_skills FROM skill_test_attempts a JOIN skill_tests t ON a.test_id=t.id WHERE a.id=%s", (attempt_id,))
+            await cur.execute("SELECT a.*,t.title as test_title,t.skills as test_skills,t.proctoring_enabled,t.proctoring_config FROM skill_test_attempts a JOIN skill_tests t ON a.test_id=t.id WHERE a.id=%s", (attempt_id,))
             a = await cur.fetchone()
     if not a: raise HTTPException(404, "Attempt not found")
-    return {**a, "test_skills": _safe_json(a.get("test_skills")), "mcq_questions": _safe_json(a.get("mcq_questions")), "coding_problems": _safe_json(a.get("coding_problems")), "sql_problems": _safe_json(a.get("sql_problems")), "interview_qa": _safe_json(a.get("interview_qa"))}
+    return {
+        **a,
+        "test_skills": _safe_json(a.get("test_skills")),
+        "proctoring_enabled": _to_bool(a.get("proctoring_enabled"), True),
+        "proctoring_config": _normalize_skill_proctoring_config(_safe_json(a.get("proctoring_config"))),
+        "mcq_questions": _safe_json(a.get("mcq_questions")),
+        "coding_problems": _safe_json(a.get("coding_problems")),
+        "sql_problems": _safe_json(a.get("sql_problems")),
+        "interview_qa": _safe_json(a.get("interview_qa")),
+        "mcq_ai_feedback": _safe_json(a.get("mcq_ai_feedback")),
+    }
 
 # ═══════════════════════════════════════════════════════════════════
 #  STAGE 1: MCQ
@@ -286,6 +458,27 @@ async def mcq_submit(body: dict = Body(...)):
             else:
                 await cur.execute("UPDATE skill_test_attempts SET mcq_answers=%s,mcq_score=%s,mcq_status='completed',mcq_end_time=CURRENT_TIMESTAMP,current_stage='coding',overall_status='in_progress' WHERE id=%s", (_json_str(answers), score, attempt_id))
         await conn.commit()
+
+    # ── Agentic MCQ Enrichment (background) ──────────────────────────────────
+    async def _run_mcq_ai_enrich():
+        try:
+            skills = _safe_json(attempt.get("skills")) or []
+            ai_feedback = await evaluate_mcq_with_ai(questions, answers, skills)
+            if ai_feedback:
+                pool2 = await get_pool()
+                async with pool2.acquire() as conn2:
+                    async with conn2.cursor() as cur2:
+                        await cur2.execute(
+                            "UPDATE skill_test_attempts SET mcq_ai_feedback = %s WHERE id = %s",
+                            (_json_str(ai_feedback), attempt_id),
+                        )
+                    await conn2.commit()
+                print(f"[EvalAgent] MCQ AI feedback saved for attempt {attempt_id}")
+        except Exception as e:
+            print(f"[EvalAgent] MCQ enrichment error: {e}")
+
+    asyncio.create_task(_run_mcq_ai_enrich())
+
     return {"success": True, "score": score, "passed": passed, "correct": correct_count, "total": len(questions), "nextStage": "coding" if passed else None}
 
 # ═══════════════════════════════════════════════════════════════════
@@ -650,6 +843,7 @@ async def _maybe_trigger_skill_agent(attempt_id: str, severity: str, user_id: st
     try:
         from services.proctor_agent import agent_analyze_session, save_analysis
         result = await agent_analyze_session(str(attempt_id), "skill", user_id=user_id)
+        terminated = False
         if result.get("fraud_score", 0) > 0:
             await save_analysis({**result, "source": "skill"})
             if result.get("fraud_score", 0) >= 35:
@@ -687,38 +881,116 @@ async def _maybe_trigger_skill_agent(attempt_id: str, severity: str, user_id: st
                     await sio.emit("agent_alert", {
                         "type": "auto_terminate",
                         "session_id": str(attempt_id),
+                        "user_id": user_id,
                         "fraud_score": result["fraud_score"],
                         "risk_level": "terminate",
                         "recommended_action": "terminate",
+                        "source": "skill",
                     }, room="admin_room")
                     print(f"[ProctorAgent] AUTO-TERMINATE sent for attempt {attempt_id} (score: {result['fraud_score']})")
+                    terminated = True
                 except Exception as e:
                     print(f"[ProctorAgent] terminate emit error: {e}")
+        return {
+            "analysisTriggered": True,
+            "recommended_action": result.get("recommended_action"),
+            "risk_level": result.get("risk_level"),
+            "terminated": terminated,
+            "reason": result.get("termination_reason") or result.get("ai_analysis", {}).get("evidence_summary") or "",
+            "fraud_score": result.get("fraud_score", 0),
+        }
     except Exception as e:
         print(f"[ProctorAgent] skill analysis error: {e}")
+        return {
+            "analysisTriggered": False,
+            "terminated": False,
+            "error": str(e),
+        }
 
 
 @router.post("/proctoring/log")
 async def proctoring_log(body: dict = Body(...)):
+    await _ensure_skill_attempt_proctoring_columns()
+    await _ensure_skill_proctoring_log_table()
     attempt_id = body.get("attemptId")
     event_type = body.get("eventType") or body.get("event_type", "unknown")
-    severity = body.get("severity", "low")
+    severity = str(body.get("severity", "low") or "low").strip().lower()
+    if severity == "warning":
+        severity = "medium"
+    if severity not in ("low", "medium", "high", "critical"):
+        severity = "low"
+
+    ai_enabled = _to_bool(body.get("aiEnabled", body.get("enableAIProctoringAgent", True)), True)
     user_id = str(body.get("userId") or body.get("user_id", ""))
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("INSERT INTO skill_proctoring_logs (attempt_id,event_type,severity,details) VALUES (%s,%s,%s,%s)", (attempt_id, event_type, severity, _json_str(body.get("details", {}))))
-            if severity == "high":
-                await cur.execute("UPDATE skill_test_attempts SET mcq_violations = COALESCE(mcq_violations,0)+1 WHERE id=%s", (attempt_id,))
-        await conn.commit()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                cols = await _get_table_columns(cur, "skill_proctoring_logs")
+                values_map: dict[str, Any] = {
+                    "attempt_id": str(attempt_id),
+                    "event_type": event_type,
+                    "severity": severity,
+                }
+                if "details" in cols:
+                    values_map["details"] = _json_str(body.get("details", {}))
+                if "user_id" in cols:
+                    values_map["user_id"] = user_id
+                if "test_stage" in cols:
+                    values_map["test_stage"] = str(body.get("testStage") or body.get("test_stage") or "")
+
+                insert_cols = [c for c in values_map.keys() if c in cols]
+                if not insert_cols:
+                    raise HTTPException(status_code=500, detail="skill_proctoring_logs has no compatible insert columns")
+                placeholders = ", ".join(["%s"] * len(insert_cols))
+                col_sql = ", ".join(insert_cols)
+                await cur.execute(
+                    f"INSERT INTO skill_proctoring_logs ({col_sql}) VALUES ({placeholders})",
+                    tuple(values_map[c] for c in insert_cols),
+                )
+
+                # Optional legacy counter update
+                if severity in ("high", "critical"):
+                    try:
+                        attempt_cols = await _get_table_columns(cur, "skill_test_attempts")
+                        if "mcq_violations" in attempt_cols:
+                            await cur.execute("UPDATE skill_test_attempts SET mcq_violations = COALESCE(mcq_violations,0)+1 WHERE id=%s", (attempt_id,))
+                    except Exception:
+                        pass
+
+            await conn.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write skill proctor log: {str(e)}")
+
+    if not ai_enabled:
+        return {"success": True, "agentTriggered": False, "fallbackMode": "rule_based", "agentAction": None, "terminated": False}
 
     # ── Trigger Proctor Intelligence Agent (background, non-blocking) ──
     aid = str(attempt_id) if attempt_id else ""
     _skill_agent_counter[aid] = _skill_agent_counter.get(aid, 0) + 1
-    if severity in ("high", "critical") or _skill_agent_counter[aid] % _SKILL_AGENT_INTERVAL == 0:
-        asyncio.create_task(_maybe_trigger_skill_agent(attempt_id, severity, user_id))
+    should_trigger = severity in ("medium", "high", "critical") or _skill_agent_counter[aid] % _SKILL_AGENT_INTERVAL == 0
+    result_payload = {"success": True, "agentTriggered": should_trigger, "fallbackMode": "rule_based", "agentAction": None, "terminated": False}
 
-    return {"success": True}
+    if should_trigger:
+        immediate_events = {
+            "phone_detected", "copy_paste", "paste_attempt", "devtools_attempt",
+            "multiple_people", "multiple_faces", "camera_blocked", "tab_switch",
+            "window_blur", "multiple_monitors",
+        }
+        if severity in ("high", "critical") or str(event_type) in immediate_events:
+            agent_result = await _maybe_trigger_skill_agent(attempt_id, severity, user_id)
+            result_payload.update({
+                "agentAction": agent_result.get("recommended_action"),
+                "terminated": bool(agent_result.get("terminated")),
+                "terminationReason": agent_result.get("reason", ""),
+                "fraudScore": agent_result.get("fraud_score", 0),
+            })
+        else:
+            asyncio.create_task(_maybe_trigger_skill_agent(attempt_id, severity, user_id))
+
+    return result_payload
 
 # ═══════════════════════════════════════════════════════════════════
 #  REPORTS & STUDENT SUBMISSIONS

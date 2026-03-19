@@ -1,5 +1,7 @@
 """Aptitude test routes: CRUD for tests, submissions, and student allocations."""
 
+import asyncio
+import json
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -9,6 +11,7 @@ from pydantic import BaseModel
 
 import pymysql.cursors
 from database import get_pool
+from services.ai_service import evaluate_aptitude_submission
 
 router = APIRouter(prefix="/api", tags=["aptitude"])
 
@@ -279,6 +282,49 @@ async def submit_aptitude_test(test_id: str, body: AptitudeSubmit):
 
         await conn.commit()
 
+    # ── Agentic Evaluation (background, non-blocking) ──────────────────────
+    async def _run_aptitude_ai_eval():
+        try:
+            category_breakdown: Dict[str, Dict] = {}
+            for qr in question_results:
+                cat = qr.get("category", "general")
+                if cat not in category_breakdown:
+                    category_breakdown[cat] = {"correct": 0, "total": 0}
+                category_breakdown[cat]["total"] += 1
+                if qr.get("isCorrect"):
+                    category_breakdown[cat]["correct"] += 1
+
+            ai_report = await evaluate_aptitude_submission(
+                test_title=test["title"],
+                question_results=question_results,
+                score=score,
+                category_breakdown={
+                    cat: f"{v['correct']}/{v['total']}"
+                    for cat, v in category_breakdown.items()
+                },
+            )
+            # Persist to DB (add column lazily)
+            pool2 = await get_pool()
+            async with pool2.acquire() as conn2:
+                async with conn2.cursor() as cur2:
+                    try:
+                        await cur2.execute(
+                            "ALTER TABLE aptitude_submissions ADD COLUMN ai_feedback JSON NULL"
+                        )
+                        await conn2.commit()
+                    except Exception:
+                        pass  # column likely already exists
+                    await cur2.execute(
+                        "UPDATE aptitude_submissions SET ai_feedback = %s WHERE id = %s",
+                        (json.dumps(ai_report), sub_id),
+                    )
+                    await conn2.commit()
+            print(f"[EvalAgent] Aptitude AI report saved for submission {sub_id}")
+        except Exception as e:
+            print(f"[EvalAgent] Aptitude background eval error: {e}")
+
+    asyncio.create_task(_run_aptitude_ai_eval())
+
     return {
         "submission": {
             "id": sub_id,
@@ -289,6 +335,7 @@ async def submit_aptitude_test(test_id: str, body: AptitudeSubmit):
             "tabSwitches": body.tabSwitches,
             "timeSpent": body.timeSpent,
             "questionResults": question_results,
+            "aiEvaluation": {"status": "processing", "message": "AI report is being generated. Check /ai-report endpoint."},
         },
         "message": "Congratulations! You passed the test!" if status == "passed" else "Keep practicing!",
     }
@@ -488,6 +535,77 @@ async def get_allocated_students(test_id: str):
 
     student_ids = [r["student_id"] for r in rows]
     return {"testId": test_id, "studentIds": student_ids, "count": len(student_ids)}
+
+
+@router.get("/aptitude-submissions/{submission_id}/ai-report")
+async def get_aptitude_ai_report(submission_id: str):
+    """Return the AI evaluation report for an aptitude submission.
+
+    If the AI report has not yet been generated, triggers generation synchronously
+    (only fires if ai_feedback is NULL in the DB).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            # Ensure column exists
+            try:
+                await cur.execute(
+                    "ALTER TABLE aptitude_submissions ADD COLUMN ai_feedback JSON NULL"
+                )
+                await conn.commit()
+            except Exception:
+                pass
+            await cur.execute(
+                "SELECT s.*, u.name AS student_name "
+                "FROM aptitude_submissions s "
+                "JOIN users u ON s.student_id = u.id "
+                "WHERE s.id = %s",
+                (submission_id,),
+            )
+            sub = await cur.fetchone()
+            if not sub:
+                raise HTTPException(404, "Submission not found")
+
+            existing = sub.get("ai_feedback")
+            if existing:
+                report = json.loads(existing) if isinstance(existing, str) else existing
+                return {"submissionId": submission_id, "status": "ready", "report": report}
+
+            # Fetch question results to run eval on-demand
+            await cur.execute(
+                "SELECT * FROM aptitude_question_results WHERE submission_id = %s",
+                (submission_id,),
+            )
+            qr_rows = await cur.fetchall()
+
+    question_results = [
+        {
+            "question": qr["question"],
+            "category": qr.get("category", "general"),
+            "userAnswer": qr["user_answer"],
+            "correctAnswer": qr["correct_answer"],
+            "isCorrect": qr["is_correct"] in ("true", True, 1),
+            "explanation": qr.get("explanation"),
+        }
+        for qr in qr_rows
+    ]
+
+    report = await evaluate_aptitude_submission(
+        test_title=sub.get("test_title", "Aptitude Test"),
+        question_results=question_results,
+        score=float(sub.get("score", 0)),
+    )
+
+    pool2 = await get_pool()
+    async with pool2.acquire() as conn2:
+        async with conn2.cursor() as cur2:
+            await cur2.execute(
+                "UPDATE aptitude_submissions SET ai_feedback = %s WHERE id = %s",
+                (json.dumps(report), submission_id),
+            )
+            await conn2.commit()
+
+    return {"submissionId": submission_id, "status": "ready", "report": report}
 
 
 @router.get("/aptitude/allocated-to/{student_id}")

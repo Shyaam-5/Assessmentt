@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 import pymysql.cursors
 from database import get_pool
-from services.ai_service import cerebras_chat
+from services.ai_service import cerebras_chat, evaluate_global_test_submission
 
 router = APIRouter(prefix="/api", tags=["global-tests"])
 
@@ -237,6 +237,7 @@ async def _maybe_trigger_global_agent(session_id: str, user_id: str = ""):
     try:
         from services.proctor_agent import agent_analyze_session, save_analysis
         result = await agent_analyze_session(session_id, "global", user_id=user_id)
+        terminated = False
         if result.get("fraud_score", 0) > 0:
             await save_analysis({**result, "source": "global"})
 
@@ -267,10 +268,24 @@ async def _maybe_trigger_global_agent(session_id: str, user_id: str = ""):
                         "source": "global",
                     }, room="admin_room")
                     print(f"[ProctorAgent] AUTO-TERMINATE sent for global session {session_id} (score: {result.get('fraud_score')})")
+                    terminated = True
                 except Exception as emit_err:
                     print(f"[ProctorAgent] global terminate emit error: {emit_err}")
+        return {
+            "analysisTriggered": True,
+            "recommended_action": result.get("recommended_action"),
+            "risk_level": result.get("risk_level"),
+            "terminated": terminated,
+            "reason": result.get("termination_reason") or result.get("ai_analysis", {}).get("evidence_summary") or "",
+            "fraud_score": result.get("fraud_score", 0),
+        }
     except Exception as err:
         print(f"[ProctorAgent] global analysis error: {err}")
+        return {
+            "analysisTriggered": False,
+            "terminated": False,
+            "error": str(err),
+        }
 
 
 @router.post("/global-tests/proctoring/log")
@@ -320,10 +335,26 @@ async def log_global_proctoring_event(body: GlobalProctoringLog):
         severity in _GLOBAL_AGENT_TRIGGER_SEVERITIES
         or _global_agent_counter[body.sessionId] % _GLOBAL_AGENT_INTERVAL == 0
     )
+    result_payload = {"success": True, "agentTriggered": should_trigger, "fallbackMode": "rule_based", "agentAction": None, "terminated": False}
     if should_trigger:
-        asyncio.create_task(_maybe_trigger_global_agent(body.sessionId, body.userId))
+        # High-signal violations get immediate agent decision so the frontend can terminate
+        # even if websocket delivery is delayed or missed.
+        immediate_events = {
+            "phone_detected", "copy_paste", "paste_attempt", "devtools_attempt",
+            "multiple_people", "multiple_faces", "camera_blocked",
+        }
+        if severity in {"high", "critical"} or body.eventType in immediate_events:
+            agent_result = await _maybe_trigger_global_agent(body.sessionId, body.userId)
+            result_payload.update({
+                "agentAction": agent_result.get("recommended_action"),
+                "terminated": bool(agent_result.get("terminated")),
+                "terminationReason": agent_result.get("reason", ""),
+                "fraudScore": agent_result.get("fraud_score", 0),
+            })
+        else:
+            asyncio.create_task(_maybe_trigger_global_agent(body.sessionId, body.userId))
 
-    return {"success": True, "agentTriggered": should_trigger, "fallbackMode": "rule_based"}
+    return result_payload
 
 
 def _normalize_section_config(raw: Any, fallback_duration: int) -> Optional[dict]:
@@ -1122,6 +1153,47 @@ async def submit_global_test(test_id: str, body: GlobalTestSubmit):
 
         await conn.commit()
 
+    # ── Agentic Evaluation (background, non-blocking) ──────────────────────
+    async def _run_global_ai_eval():
+        try:
+            ai_report = await evaluate_global_test_submission(
+                test_title=test["title"],
+                section_scores=section_scores,
+                question_results=question_results,
+                total_score=overall_pct,
+                proctoring_violations=body.totalViolations,
+                time_spent=body.timeSpent,
+            )
+            pool2 = await get_pool()
+            async with pool2.acquire() as conn2:
+                async with conn2.cursor() as cur2:
+                    try:
+                        await cur2.execute(
+                            """CREATE TABLE IF NOT EXISTS personalized_reports (
+                               id VARCHAR(60) PRIMARY KEY,
+                               submission_id VARCHAR(60) NOT NULL,
+                               report_type VARCHAR(40) DEFAULT 'ai_evaluation',
+                               content JSON,
+                               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                               INDEX idx_pr_submission (submission_id)
+                            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+                        )
+                        await conn2.commit()
+                    except Exception:
+                        pass
+                    await cur2.execute(
+                        """INSERT INTO personalized_reports (id, submission_id, report_type, content)
+                           VALUES (%s, %s, 'ai_evaluation', %s)
+                           ON DUPLICATE KEY UPDATE content = VALUES(content)""",
+                        (f"pr-{sub_id}", sub_id, json.dumps(ai_report)),
+                    )
+                    await conn2.commit()
+            print(f"[EvalAgent] Global test AI report saved for submission {sub_id}")
+        except Exception as e:
+            print(f"[EvalAgent] Global test background eval error: {e}")
+
+    asyncio.create_task(_run_global_ai_eval())
+
     return {
         "submission": {
             "id": sub_id,
@@ -1144,6 +1216,7 @@ async def submit_global_test(test_id: str, body: GlobalTestSubmit):
             "submissionType": body.submissionType or "manual",
             "terminationReason": body.terminationReason,
             "questionResults": question_results,
+            "aiEvaluation": {"status": "processing", "message": "AI report is being generated in the background."},
         },
         "message": "Congratulations! You passed the test!" if status == "passed" else "Keep practicing!",
     }

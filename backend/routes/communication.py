@@ -32,7 +32,7 @@ from services.comm_service import (
     submit_quiz_answers,
     generate_tts_audio,
 )
-from services.ai_service import cerebras_chat, parse_json
+from services.ai_service import cerebras_chat, parse_json, evaluate_grammar_answers, evaluate_comm_attempt
 
 router = APIRouter(prefix="/api/communication", tags=["communication"])
 
@@ -977,6 +977,37 @@ async def submit_comm_module(attempt_id: int, request: Request):
     }
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AGENTIC EVALUATION: Grammar AI Feedback + Holistic Comm Report
+# ═══════════════════════════════════════════════════════════════════
+
+def _json_str(obj) -> str:
+    """Helper: safely serialise an object to a JSON string."""
+    if obj is None:
+        return "null"
+    if isinstance(obj, str):
+        return obj
+    return json.dumps(obj)
+
+
+async def _ensure_ai_columns():
+    """Lazily add AI feedback columns to comm_test_attempts."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for col_sql in [
+                "ALTER TABLE comm_test_attempts ADD COLUMN module_d_ai_feedback JSON NULL",
+                "ALTER TABLE comm_test_attempts ADD COLUMN ai_report JSON NULL",
+            ]:
+                try:
+                    await cur.execute(col_sql)
+                except Exception:
+                    pass
+        await conn.commit()
+
+
 @router.post("/tests/attempt/{attempt_id}/finish")
 async def finish_comm_attempt(attempt_id: int, payload: dict = Body(default={})):
     """Finalize an attempt (mark complete) and store proctoring violations."""
@@ -993,13 +1024,16 @@ async def finish_comm_attempt(attempt_id: int, payload: dict = Body(default={}))
             for col_sql in [
                 "ALTER TABLE comm_test_attempts ADD COLUMN violation_details JSON AFTER proctoring_violations",
                 "ALTER TABLE comm_test_attempts ADD COLUMN auto_terminated TINYINT DEFAULT 0 AFTER violation_details",
+                "ALTER TABLE comm_test_attempts ADD COLUMN module_d_ai_feedback JSON NULL",
+                "ALTER TABLE comm_test_attempts ADD COLUMN ai_report JSON NULL",
             ]:
                 try:
                     await cur.execute(col_sql)
                 except Exception:
                     pass  # column already exists
             await cur.execute(
-                "SELECT module_a_score, module_b_score, module_c_score, module_d_score "
+                "SELECT module_a_score, module_b_score, module_c_score, module_d_score, "
+                "module_a_data, module_b_data, module_c_data, module_d_data "
                 "FROM comm_test_attempts WHERE id=%s",
                 (attempt_id,),
             )
@@ -1017,6 +1051,122 @@ async def finish_comm_attempt(attempt_id: int, payload: dict = Body(default={}))
                  proctoring_violations, violation_json, auto_terminated, attempt_id),
             )
         await conn.commit()
+
+    # ── Agentic: Grammar feedback + Holistic report (background) ────────
+    async def _run_comm_ai_eval():
+        try:
+            # Grammar AI feedback – Module D wrong answers
+            d_data = _safe_json(row.get("module_d_data"))
+            if d_data and isinstance(d_data, list):
+                wrong = [
+                    {
+                        "question_index": i,
+                        "sentence": item.get("sentence", ""),
+                        "student_answer": item.get("userAnswer", item.get("student_answer", "")),
+                        "correct_answer": item.get("correctAnswer", item.get("answer", "")),
+                        "category": item.get("category", "grammar"),
+                    }
+                    for i, item in enumerate(d_data)
+                    if item.get("is_correct") in (False, "false", 0)
+                       or str(item.get("userAnswer", "")).lower() != str(item.get("correctAnswer", item.get("answer", ""))).lower()
+                ]
+                grammar_feedback = await evaluate_grammar_answers(wrong)
+            else:
+                grammar_feedback = []
+
+            # Holistic comm attempt report
+            a_score, b_score, c_score, d_score = scores
+            holistic = await evaluate_comm_attempt(
+                module_a_score=a_score,
+                module_b_score=b_score,
+                module_c_score=c_score,
+                module_d_score=d_score,
+                module_a_data=_safe_json(row.get("module_a_data")),
+                module_b_data=_safe_json(row.get("module_b_data")),
+                module_c_data=_safe_json(row.get("module_c_data")),
+                module_d_data=d_data,
+            )
+
+            # Persist
+            pool2 = await get_pool()
+            async with pool2.acquire() as conn2:
+                async with conn2.cursor() as cur2:
+                    await cur2.execute(
+                        "UPDATE comm_test_attempts SET module_d_ai_feedback=%s, ai_report=%s WHERE id=%s",
+                        (_json_str(grammar_feedback), _json_str(holistic), attempt_id),
+                    )
+                await conn2.commit()
+            print(f"[EvalAgent] Comm AI report saved for attempt {attempt_id}")
+        except Exception as e:
+            print(f"[EvalAgent] Comm background eval error: {e}")
+
+    asyncio.create_task(_run_comm_ai_eval())
+
     return {"success": True, "overall_score": overall,
             "proctoring_violations": proctoring_violations,
-            "auto_terminated": bool(auto_terminated)}
+            "auto_terminated": bool(auto_terminated),
+            "aiEvaluation": {"status": "processing", "message": "AI report is being generated."}}
+
+
+@router.get("/tests/attempt/{attempt_id}/ai-report")
+async def get_comm_ai_report(attempt_id: int):
+    """Return the holistic AI evaluation report for a communication attempt.
+
+    Triggers on-demand generation synchronously if not yet stored.
+    """
+    await _ensure_comm_tables()
+    await _ensure_ai_columns()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT module_a_score, module_b_score, module_c_score, module_d_score, "
+                "module_a_data, module_b_data, module_c_data, module_d_data, "
+                "module_d_ai_feedback, ai_report FROM comm_test_attempts WHERE id=%s",
+                (attempt_id,),
+            )
+            row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Attempt not found")
+
+    existing_report = _safe_json(row.get("ai_report"))
+    grammar_fb = _safe_json(row.get("module_d_ai_feedback")) or []
+
+    if existing_report:
+        return {
+            "attemptId": attempt_id,
+            "status": "ready",
+            "report": existing_report,
+            "grammarFeedback": grammar_fb,
+        }
+
+    # Generate on-demand
+    scores = [float(row.get(f"module_{m}_score", 0)) for m in "abcd"]
+    a_score, b_score, c_score, d_score = scores
+
+    holistic = await evaluate_comm_attempt(
+        module_a_score=a_score,
+        module_b_score=b_score,
+        module_c_score=c_score,
+        module_d_score=d_score,
+        module_a_data=_safe_json(row.get("module_a_data")),
+        module_b_data=_safe_json(row.get("module_b_data")),
+        module_c_data=_safe_json(row.get("module_c_data")),
+        module_d_data=_safe_json(row.get("module_d_data")),
+    )
+
+    pool2 = await get_pool()
+    async with pool2.acquire() as conn2:
+        async with conn2.cursor() as cur2:
+            await cur2.execute(
+                "UPDATE comm_test_attempts SET ai_report=%s WHERE id=%s",
+                (_json_str(holistic), attempt_id),
+            )
+        await conn2.commit()
+
+    return {
+        "attemptId": attempt_id,
+        "status": "ready",
+        "report": holistic,
+        "grammarFeedback": grammar_fb,
+    }

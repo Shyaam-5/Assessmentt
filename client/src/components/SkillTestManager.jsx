@@ -96,7 +96,9 @@ export default function SkillTestManager() {
         proctoring_config: {
             camera: true, mic: true, fullscreen: true,
             paste_disabled: true, face_detection: true,
-            camera_block_detect: true, phone_detect: true
+            camera_block_detect: true, phone_detect: true,
+            enable_ai_agent: true,
+            max_violations: 10,
         }
     });
     const [skillSearch, setSkillSearch] = useState('');
@@ -125,7 +127,7 @@ export default function SkillTestManager() {
         try {
             await axios.post(`${API}/api/skill-tests/create`, form);
             setShowCreate(false);
-            setForm({ title: '', description: '', skills: [], difficulty_level: 'mixed', mcq_count: 10, coding_count: 3, sql_count: 3, interview_count: 5, attempt_limit: 1, mcq_duration_minutes: 30, coding_duration_minutes: 45, sql_duration_minutes: 45, interview_duration_minutes: 30, mcq_passing_score: 60, coding_passing_score: 50, sql_passing_score: 50, interview_passing_score: 6, proctoring_enabled: true, proctoring_config: { camera: true, mic: true, fullscreen: true, paste_disabled: true, face_detection: true, camera_block_detect: true, phone_detect: true } });
+            setForm({ title: '', description: '', skills: [], difficulty_level: 'mixed', mcq_count: 10, coding_count: 3, sql_count: 3, interview_count: 5, attempt_limit: 1, mcq_duration_minutes: 30, coding_duration_minutes: 45, sql_duration_minutes: 45, interview_duration_minutes: 30, mcq_passing_score: 60, coding_passing_score: 50, sql_passing_score: 50, interview_passing_score: 6, proctoring_enabled: true, proctoring_config: { camera: true, mic: true, fullscreen: true, paste_disabled: true, face_detection: true, camera_block_detect: true, phone_detect: true, enable_ai_agent: true, max_violations: 10 } });
             loadTests();
         } catch (err) {
             setError(err.response?.data?.error || err.message);
@@ -444,7 +446,8 @@ export default function SkillTestManager() {
                                     { key: 'paste_disabled', label: 'Paste Disabled', desc: 'Block copy-paste', icon: <ClipboardX size={16} />, color: '#f59e0b' },
                                     { key: 'face_detection', label: 'Face Movement', desc: 'Detect face away/moving', icon: <ScanFace size={16} />, color: '#10b981' },
                                     { key: 'camera_block_detect', label: 'Camera Block', desc: 'Detect covered camera', icon: <Video size={16} />, color: '#ef4444' },
-                                    { key: 'phone_detect', label: 'Phone Detection', desc: 'Detect mobile phone', icon: <Smartphone size={16} />, color: '#ec4899' }
+                                    { key: 'phone_detect', label: 'Phone Detection', desc: 'Detect mobile phone', icon: <Smartphone size={16} />, color: '#ec4899' },
+                                    { key: 'enable_ai_agent', label: 'AI Proctor Agent', desc: 'AI fraud reasoning & auto-terminate', icon: <Zap size={16} />, color: '#f43f5e' }
                                 ].map(opt => {
                                     const enabled = form.proctoring_config[opt.key];
                                     return (
@@ -471,6 +474,21 @@ export default function SkillTestManager() {
                                         </button>
                                     );
                                 })}
+                            </div>
+                            <div style={{ marginTop: '12px', display: 'grid', gridTemplateColumns: 'repeat(3, minmax(160px, 1fr))', gap: '10px' }}>
+                                <NumberInput
+                                    label="Max Violations"
+                                    value={form.proctoring_config.max_violations || 10}
+                                    onChange={v => setForm({
+                                        ...form,
+                                        proctoring_config: { ...form.proctoring_config, max_violations: v }
+                                    })}
+                                    min={3}
+                                    max={50}
+                                    icon={<AlertTriangle size={12} />}
+                                    color="#ef4444"
+                                    suffix="Auto-terminate threshold"
+                                />
                             </div>
                         )}
                     </SectionCard>
