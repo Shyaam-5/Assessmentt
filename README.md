@@ -1,0 +1,75 @@
+# AI Assessment Hub Repository Structure
+
+## backend/
+- config.py
+- create_user.py
+- database.py
+- main.py
+- requirements.txt
+- ml/
+  - __init__.py
+  - ensemble_predictor.py
+  - ensemble_report.txt
+  - exam_sessions.csv
+  - generate_dataset.py
+  - train_ensemble.py
+- routes/
+  - admin.py
+  - ai.py
+  - analytics.py
+  - aptitude.py
+  - auth.py
+  - behavior_agent.py
+  - chat.py
+  - code_execution.py
+  - communication.py
+  - global_tests.py
+  - hints.py
+  - messaging.py
+  - problems.py
+  - proctor_agent.py
+  - skill_tests.py
+  - submissions.py
+  - tasks.py
+- services/
+  - ai_service.py
+  - behavior_agent.py
+  - comm_service.py
+  - pagination.py
+  - proctor_agent.py
+- uploads/
+  - proctoring/
+  - tts/
+
+## client/
+- index.html
+- jsconfig.json
+- package.json
+- vite.config.js
+- public/
+  - _redirects
+  - manifest.json
+  - offline.html
+  - sw.js
+  - icons/
+- src/
+  - App.jsx
+  - index.css
+  - main.jsx
+  - components/
+    - [various React components]
+  - hooks/
+    - useProctoring.js
+  - pages/
+    - AdminPortal.jsx
+    - Login.jsx
+    - MentorPortal.jsx
+    - StudentPortal.jsx
+  - services/
+    - i18n.jsx
+    - offlineService.js
+    - proctoringSocketAdapter.js
+    - socketService.js
+  - styles/
+    - accessibility.css
+    - darkmode.css
