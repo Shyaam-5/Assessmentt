@@ -4,6 +4,8 @@ import Login from './pages/Login'
 import StudentPortal from './pages/StudentPortal'
 import MentorPortal from './pages/MentorPortal'
 import AdminPortal from './pages/AdminPortal'
+import ScanMobilePage from './prescan/pages/ScanMobilePage'
+import ScanDesktopPage from './prescan/pages/ScanDesktopPage'
 
 // Error Boundary to catch React runtime errors
 class ErrorBoundary extends Component {
@@ -174,6 +176,14 @@ function App() {
                     <Route path="/admin/*" element={
                         <ProtectedRoute allowedRoles={['admin']}>
                             <AdminPortal />
+                        </ProtectedRoute>
+                    } />
+
+                    {/* Environment scan routes (public — token-based auth for mobile) */}
+                    <Route path="/scan/mobile" element={<ScanMobilePage />} />
+                    <Route path="/scan/desktop" element={
+                        <ProtectedRoute allowedRoles={['student', 'mentor', 'admin']}>
+                            <ScanDesktopPage />
                         </ProtectedRoute>
                     } />
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import EnvironmentScanGate from '../prescan/components/EnvironmentScanGate'
 import { Routes, Route, useLocation } from 'react-router-dom'
 import { LayoutDashboard, ClipboardList, Code, Send, Trophy, Clock, CheckCircle, XCircle, ChevronRight, Play, Upload, FileText, Trash2, Eye, AlertTriangle, Download, Lightbulb, HelpCircle, Sparkles, Target, Zap, BookOpen, Brain, Award, X, Video, Shield, Search, BarChart3, Flame, Layers, Database, RefreshCw, TrendingUp, Radar, Users, ArrowUpRight, ArrowDownRight, Minus, PieChart, MessageSquare, Github, ExternalLink, Link2 } from 'lucide-react'
 import DashboardLayout from '@/components/DashboardLayout'
@@ -1738,6 +1739,8 @@ function GlobalTests({ user }) {
     const [showTestInterface, setShowTestInterface] = useState(false)
     const [submissions, setSubmissions] = useState([])
     const [submissionResult, setSubmissionResult] = useState(null)
+    const [scanGate, setScanGate] = useState(null) // { test } when scan gate is open
+    const pendingTestRef = useRef(null)
 
     useEffect(() => {
         const fetchTests = async () => {
@@ -1787,11 +1790,25 @@ function GlobalTests({ user }) {
         }
         try {
             const res = await axios.get(`${API_BASE}/global-tests/${test.id}`)
-            setSelectedTest(res.data)
-            setShowTestInterface(true)
+            pendingTestRef.current = res.data
+            setScanGate({ test: res.data })
         } catch (e) {
             alert(e.response?.data?.error || 'Failed to load test')
         }
+    }
+
+    const handleScanApproved = () => {
+        setScanGate(null)
+        if (pendingTestRef.current) {
+            setSelectedTest(pendingTestRef.current)
+            setShowTestInterface(true)
+            pendingTestRef.current = null
+        }
+    }
+
+    const handleScanCancel = () => {
+        setScanGate(null)
+        pendingTestRef.current = null
     }
 
     const handleComplete = (result) => {
@@ -2111,6 +2128,14 @@ function GlobalTests({ user }) {
                 </>
             )}
             <ResultModal />
+            {scanGate && (
+                <EnvironmentScanGate
+                    userId={user.id}
+                    examTitle={scanGate.test?.title || 'Exam'}
+                    onApproved={handleScanApproved}
+                    onCancel={handleScanCancel}
+                />
+            )}
         </div>
     )
 }
@@ -2123,6 +2148,8 @@ function AptitudeTests({ user }) {
     const [showTestInterface, setShowTestInterface] = useState(false)
     const [submissions, setSubmissions] = useState([])
     const [showResults, setShowResults] = useState(null)
+    const [scanGate, setScanGate] = useState(null) // { test } when scan gate is open
+    const pendingTestRef = useRef(null)
 
     useEffect(() => {
         fetchTests()
@@ -2222,14 +2249,28 @@ function AptitudeTests({ user }) {
             return
         }
 
-        // Fetch full test with questions
+        // Fetch full test with questions, then gate on environment scan
         try {
             const response = await axios.get(`${API_BASE}/aptitude/${test.id}`)
-            setSelectedTest(response.data)
-            setShowTestInterface(true)
+            pendingTestRef.current = response.data
+            setScanGate({ test: response.data })
         } catch (error) {
             alert('Error loading test')
         }
+    }
+
+    const handleScanApproved = () => {
+        setScanGate(null)
+        if (pendingTestRef.current) {
+            setSelectedTest(pendingTestRef.current)
+            setShowTestInterface(true)
+            pendingTestRef.current = null
+        }
+    }
+
+    const handleScanCancel = () => {
+        setScanGate(null)
+        pendingTestRef.current = null
     }
 
     const handleTestComplete = (result) => {
@@ -2849,6 +2890,14 @@ function AptitudeTests({ user }) {
                         </div>
                     </div>
                 </div>
+            )}
+            {scanGate && (
+                <EnvironmentScanGate
+                    userId={user.id}
+                    examTitle={scanGate.test?.title || 'Exam'}
+                    onApproved={handleScanApproved}
+                    onCancel={handleScanCancel}
+                />
             )}
         </div>
     )

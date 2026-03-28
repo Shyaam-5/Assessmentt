@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from database import init_db, close_db
+from database import init_db, close_db, create_prescan_tables
 
 # ─── Socket.io ──────────────────────────────────────────────────
 
@@ -15,6 +15,14 @@ sio = socketio.AsyncServer(
     async_mode="asgi",
     cors_allowed_origins="*",
 )
+
+# Register prescan socket handlers (must happen before any @sio.event decorators
+# that conflict, so we do it right after sio is created)
+from services.prescan_socket_handlers import (
+    register_prescan_socket_handlers,
+    get_prescan_disconnect_handler,
+)
+register_prescan_socket_handlers(sio)
 
 # Connected monitoring clients
 monitors: dict[str, list] = {"admins": {}, "mentors": {}, "students": {}}
@@ -28,6 +36,9 @@ async def connect(sid, environ):
 @sio.event
 async def disconnect(sid):
     print(f"[Socket] Disconnected: {sid}")
+    prescan_disconnect = get_prescan_disconnect_handler()
+    if prescan_disconnect is not None:
+        await prescan_disconnect(sid)
 
 
 @sio.event
@@ -100,6 +111,7 @@ async def test_failed(sid, data):
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
+    await create_prescan_tables()
     print("[OK] FastAPI server started.")
     yield
     # Shutdown
@@ -145,6 +157,7 @@ from routes.communication import router as comm_router
 from routes.proctor_agent import router as proctor_agent_router
 from routes.behavior_agent import router as behavior_agent_router
 from routes.ai import router as ai_router
+from routes.environment_scan import router as environment_scan_router
 
 app.include_router(auth_router)
 app.include_router(tasks_router)
@@ -163,6 +176,7 @@ app.include_router(comm_router)
 app.include_router(proctor_agent_router)
 app.include_router(behavior_agent_router)
 app.include_router(ai_router)
+app.include_router(environment_scan_router)
 
 
 # ─── Health check ────────────────────────────────────────────────
