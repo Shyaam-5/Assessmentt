@@ -20,14 +20,17 @@ class Settings:
         self.DB_PASSWORD: str = db.password or ""
         self.DB_NAME: str = (db.path or "/test").lstrip("/")
 
-        # --- Cerebras AI ---
-        self.CEREBRAS_API_URL: str = "https://api.cerebras.ai/v1/chat/completions"
-        self.CEREBRAS_API_KEYS: list[str] = self._load_cerebras_keys()
-
-        # --- Groq AI (for environment scan) ---
-        self.GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-        self.GROQ_MODEL: str = os.getenv("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
-        self.GROQ_FALLBACK_MODEL: str = os.getenv("GROQ_FALLBACK_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+        # --- Groq AI ---
+        self.GROQ_API_URL: str = "https://api.groq.com/openai/v1/chat/completions"
+        self.GROQ_API_KEYS: list[str] = self._load_groq_keys()
+        self.GROQ_API_KEY: str = self.GROQ_API_KEYS[0] if self.GROQ_API_KEYS else ""
+        self.GROQ_MODEL: str = os.getenv("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip()
+        fallback_models = os.getenv("GROQ_FALLBACK_MODELS", "llama-3.1-8b-instant")
+        self.GROQ_FALLBACK_MODELS: list[str] = [
+            m.strip() for m in fallback_models.split(",")
+            if m.strip() and m.strip() != self.GROQ_MODEL
+        ]
+        self.GROQ_FALLBACK_MODEL: str = self.GROQ_FALLBACK_MODELS[0] if self.GROQ_FALLBACK_MODELS else self.GROQ_MODEL
 
         # --- Server ---
         self.PORT: int = int(os.getenv("PORT", "8000"))
@@ -48,14 +51,14 @@ class Settings:
         return f"{base}/scan/mobile?token={session_token}"
 
     # ---- helpers ----
-    def _load_cerebras_keys(self) -> list[str]:
+    def _load_groq_keys(self) -> list[str]:
         keys: list[str] = []
-        for var in ("CEREBRAS_API_KEY", "cereberas_api_key"):
+        for var in ("GROQ_API_KEY",):
             v = os.getenv(var, "")
             if v.strip():
                 keys.append(v.strip())
-        for i in range(1, 5):
-            v = os.getenv(f"CEREBRAS_API_KEY_{i}", "")
+        for i in range(1, 10):
+            v = os.getenv(f"GROQ_API_KEY_{i}", "")
             if v.strip():
                 keys.append(v.strip())
         # deduplicate while preserving order

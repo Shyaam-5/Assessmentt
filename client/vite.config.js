@@ -21,6 +21,8 @@ export default defineConfig({
     },
     server: {
         host: true,
+        port: 5173,
+        strictPort: true,
         allowedHosts: ['sauncier-epifocal-soon.ngrok-free.dev'],
         proxy: {
             '/api': {

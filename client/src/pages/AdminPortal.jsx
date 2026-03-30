@@ -3322,7 +3322,10 @@ function GlobalTestsAdmin() {
     const handleGenerateQuestions = async () => {
         setIsGenerating(true)
         try {
-            const res = await axios.post(`${API_BASE}/ai/generate-aptitude`, aiPrompt)
+            const res = await axios.post(`${API_BASE}/ai/generate-aptitude`, {
+                ...aiPrompt,
+                section: sectionTab,
+            })
             if (res.data.questions) setGeneratedQuestions(res.data.questions)
         } catch (_) {
             alert('Error generating questions')
@@ -3338,7 +3341,7 @@ function GlobalTestsAdmin() {
                 question: q.question,
                 options: q.options || ['', '', '', ''],
                 correctAnswer: q.correctAnswer ?? 0,
-                category: q.category || 'general',
+                category: q.category || sectionTab || 'general',
                 explanation: q.explanation || ''
             }))]
         }))
@@ -4306,7 +4309,10 @@ function AptitudeTestsAdmin() {
     const handleGenerateQuestions = async () => {
         setIsGenerating(true)
         try {
-            const response = await axios.post(`${API_BASE}/ai/generate-aptitude`, aiPrompt)
+            const response = await axios.post(`${API_BASE}/ai/generate-aptitude`, {
+                ...aiPrompt,
+                section: 'aptitude',
+            })
             if (response.data.questions) {
                 setGeneratedQuestions(response.data.questions)
             }
