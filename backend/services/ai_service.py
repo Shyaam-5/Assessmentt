@@ -1,4 +1,4 @@
-"""Cerebras AI API wrapper with key rotation / failover.
+"""Groq AI API wrapper with key rotation / failover.
 
 Provides generation & evaluation helpers for the Skill-Test assessment system:
 MCQ, Coding, SQL, Interview, and Final Report.
@@ -42,59 +42,91 @@ def _pick_random(arr: list, n: int) -> list:
     return random.sample(arr, min(n, len(arr)))
 
 
-# ─── Low-level Cerebras caller ─────────────────────────────────────────
+# ─── Low-level Groq caller ─────────────────────────────────────────────
+def _build_model_candidates(preferred_model: str | None) -> list[str]:
+    models = [preferred_model or settings.GROQ_MODEL, *settings.GROQ_FALLBACK_MODELS]
+    # Last-resort defaults that are broadly available in Groq accounts.
+    models.extend(["meta-llama/llama-4-scout-17b-16e-instruct", "llama-3.1-8b-instant"])
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in models:
+        mm = (m or "").strip()
+        if mm and mm not in seen:
+            seen.add(mm)
+            out.append(mm)
+    return out
+
+
 async def cerebras_chat(
     messages: list[dict],
     *,
-    model: str = "gpt-oss-120b",
+    model: str | None = None,
     temperature: float = 0.7,
     max_tokens: int = 1024,
     response_format: dict | None = None,
 ) -> dict:
-    """Call Cerebras chat completions, rotating through available keys on failure."""
+    """Call Groq chat completions, rotating through available models and keys."""
 
-    keys = settings.CEREBRAS_API_KEYS
+    keys = settings.GROQ_API_KEYS
     if not keys:
-        raise RuntimeError("No Cerebras API keys configured.")
+        raise RuntimeError("No Groq API keys configured.")
 
     last_error: Exception | None = None
+    model_candidates = _build_model_candidates(model)
 
-    for api_key in keys:
-        try:
-            payload: dict = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            if response_format:
-                payload["response_format"] = response_format
+    for model_name in model_candidates:
+        model_missing = False
 
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(
-                    settings.CEREBRAS_API_URL,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
+        for api_key in keys:
+            try:
+                payload: dict = {
+                    "model": model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if response_format:
+                    payload["response_format"] = response_format
 
-            if resp.status_code >= 400:
-                print(f"⚠️  API Error ({resp.status_code}) with key …{api_key[-5:]}")
-                last_error = RuntimeError(f"API Error {resp.status_code}: {resp.text}")
-                continue
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.post(
+                        settings.GROQ_API_URL,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
 
-            return resp.json()
+                if resp.status_code >= 400:
+                    error_text = resp.text
+                    try:
+                        err_json = resp.json()
+                    except Exception:
+                        err_json = {}
+                    err_code = str(err_json.get("code", "")).strip().lower()
+                    if err_code == "model_not_found" or ("model" in error_text.lower() and "not exist" in error_text.lower()):
+                        model_missing = True
+                        last_error = RuntimeError(f"Model unavailable: {model_name}")
+                        break
+                    print(f"API Error ({resp.status_code}) with key ...{api_key[-5:]} model {model_name}")
+                    last_error = RuntimeError(f"API Error {resp.status_code}: {error_text}")
+                    continue
 
-        except Exception as exc:
-            print(f"⚠️  Network error with key …{api_key[-5:]}: {exc}")
-            last_error = exc
+                return resp.json()
 
-    raise last_error or RuntimeError("All AI API keys failed.")
+            except Exception as exc:
+                print(f"Network error with key ...{api_key[-5:]} model {model_name}: {exc}")
+                last_error = exc
+
+        if model_missing:
+            print(f"Model not available, trying fallback: {model_name}")
+            continue
+
+    raise last_error or RuntimeError("All AI API keys/models failed.")
 
 
-# ─── Helper: call Cerebras and return content string ───────────────────
+# ─── Helper: call Groq and return content string ───────────────────────
 async def _call_cerebras(
     messages: list[dict],
     *,
@@ -682,3 +714,4 @@ def _default_report() -> dict:
         "section_feedback": {"mcq": "N/A", "coding": "N/A", "sql": "N/A", "interview": "N/A"},
         "mcq_question_analysis": [],
     }
+

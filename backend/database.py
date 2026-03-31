@@ -181,3 +181,222 @@ async def close_db() -> None:
         _pool.close()
         _pool = None
         print("[OK] Database pool closed.")
+
+
+# ─── Prescan table DDL ──────────────────────────────────────
+
+_PRESCAN_TABLES_SQL = [
+    """
+    CREATE TABLE IF NOT EXISTS prescan_exams (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        duration_minutes INT NOT NULL DEFAULT 60,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS prescan_exam_sessions (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        candidate_id VARCHAR(50) NOT NULL,
+        exam_id BIGINT NOT NULL,
+        session_token VARCHAR(128) NOT NULL UNIQUE,
+        status ENUM('pending','scanning','approved','rejected','incomplete','in_progress','completed') NOT NULL DEFAULT 'pending',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_candidate_exam (candidate_id, exam_id),
+        INDEX idx_token (session_token),
+        FOREIGN KEY (exam_id) REFERENCES prescan_exams(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS prescan_room_scans (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        exam_session_id BIGINT NOT NULL,
+        mobile_socket_id VARCHAR(128),
+        scan_start_time DATETIME,
+        scan_end_time DATETIME,
+        final_verdict ENUM('approved','rejected','incomplete'),
+        verdict_reason TEXT,
+        total_frames INT DEFAULT 0,
+        flagged_frames INT DEFAULT 0,
+        angles_covered JSON,
+        raw_summary JSON,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (exam_session_id) REFERENCES prescan_exam_sessions(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS prescan_scan_frames (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        room_scan_id BIGINT NOT NULL,
+        frame_index INT NOT NULL,
+        captured_at DATETIME(3) NOT NULL,
+        angle_label VARCHAR(32),
+        device_orientation JSON,
+        detections JSON NOT NULL,
+        is_flagged TINYINT(1) NOT NULL DEFAULT 0,
+        flag_reasons JSON,
+        processing_ms INT,
+        groq_raw_response TEXT,
+        FOREIGN KEY (room_scan_id) REFERENCES prescan_room_scans(id),
+        INDEX idx_scan_frame (room_scan_id, frame_index)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS prescan_scan_audit_log (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        room_scan_id BIGINT NOT NULL,
+        event_type VARCHAR(64) NOT NULL,
+        actor VARCHAR(32) NOT NULL,
+        payload JSON,
+        created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        FOREIGN KEY (room_scan_id) REFERENCES prescan_room_scans(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS prescan_scan_overrides (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        room_scan_id BIGINT NOT NULL UNIQUE,
+        proctor_id VARCHAR(50) NOT NULL,
+        original_verdict ENUM('approved','rejected','incomplete') NOT NULL,
+        override_verdict ENUM('approved','rejected') NOT NULL,
+        reason TEXT NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (room_scan_id) REFERENCES prescan_room_scans(id)
+    )
+    """,
+]
+
+_PRESCAN_SEED_EXAMS = [
+    (1, "General Assessment",      "Standard general knowledge assessment",        60),
+    (2, "Technical Aptitude Test", "Programming and technical problem solving",     90),
+    (3, "Mathematics Exam",        "Algebra, calculus and statistics assessment",   75),
+]
+
+
+async def _drop_foreign_keys_for_column(cur, table_name: str, column_name: str) -> None:
+    await cur.execute(
+        """
+        SELECT CONSTRAINT_NAME
+        FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = %s
+          AND TABLE_NAME = %s
+          AND COLUMN_NAME = %s
+          AND REFERENCED_TABLE_NAME IS NOT NULL
+        """,
+        (settings.DB_NAME, table_name, column_name),
+    )
+    rows = await cur.fetchall() or []
+    for row in rows:
+        name = row.get("CONSTRAINT_NAME")
+        if not name:
+            continue
+        try:
+            await cur.execute(f"ALTER TABLE `{table_name}` DROP FOREIGN KEY `{name}`")
+            print(f"[OK] Dropped foreign key {table_name}.{name}")
+        except Exception as exc:
+            print(f"[WARNING] Could not drop foreign key {table_name}.{name}: {exc}")
+
+
+async def _ensure_prescan_identity_columns() -> None:
+    if _pool is None:
+        return
+
+    migrations = [
+        ("prescan_exam_sessions", "candidate_id"),
+        ("prescan_scan_overrides", "proctor_id"),
+    ]
+
+    async with _pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for table_name, column_name in migrations:
+                try:
+                    await cur.execute(
+                        """
+                        SELECT DATA_TYPE, COLUMN_TYPE
+                        FROM information_schema.COLUMNS
+                        WHERE TABLE_SCHEMA = %s
+                          AND TABLE_NAME = %s
+                          AND COLUMN_NAME = %s
+                        """,
+                        (settings.DB_NAME, table_name, column_name),
+                    )
+                    meta = await cur.fetchone()
+                    if not meta:
+                        print(f"[WARNING] Missing column for migration: {table_name}.{column_name}")
+                        continue
+
+                    if str(meta.get("DATA_TYPE", "")).lower() == "varchar":
+                        continue
+
+                    await _drop_foreign_keys_for_column(cur, table_name, column_name)
+                    await cur.execute(
+                        f"ALTER TABLE `{table_name}` MODIFY COLUMN `{column_name}` VARCHAR(50) NOT NULL"
+                    )
+                    print(f"[OK] Updated {table_name}.{column_name} to VARCHAR(50)")
+                except Exception as exc:
+                    print(f"[WARNING] Prescan identity-column migration {table_name}.{column_name} failed: {exc}")
+
+            # Best-effort data backfill: convert legacy numeric prescan user ids to main users.id (by email).
+            try:
+                await cur.execute(
+                    """
+                    UPDATE prescan_exam_sessions es
+                    JOIN prescan_users pu ON pu.id = CAST(es.candidate_id AS UNSIGNED)
+                    JOIN users u ON u.email = pu.email
+                    SET es.candidate_id = u.id
+                    WHERE es.candidate_id REGEXP '^[0-9]+$'
+                    """
+                )
+            except Exception as exc:
+                print(f"[WARNING] Prescan candidate-id backfill skipped: {exc}")
+
+            try:
+                await cur.execute(
+                    """
+                    UPDATE prescan_scan_overrides so
+                    JOIN prescan_users pu ON pu.id = CAST(so.proctor_id AS UNSIGNED)
+                    JOIN users u ON u.email = pu.email
+                    SET so.proctor_id = u.id
+                    WHERE so.proctor_id REGEXP '^[0-9]+$'
+                    """
+                )
+            except Exception as exc:
+                print(f"[WARNING] Prescan proctor-id backfill skipped: {exc}")
+
+
+async def create_prescan_tables() -> None:
+    """Create prescan environment-scan tables if they don't exist."""
+    if _pool is None:
+        print("[WARNING] Cannot create prescan tables – pool not initialised.")
+        return
+
+    for sql in _PRESCAN_TABLES_SQL:
+        try:
+            async with _pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(sql.strip())
+        except Exception as exc:
+            print(f"[WARNING] Prescan table DDL (continuing): {exc}")
+
+    await _ensure_prescan_identity_columns()
+
+    # Seed default exams if table is empty
+    try:
+        async with _pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT COUNT(*) AS cnt FROM prescan_exams")
+                row = await cur.fetchone()
+                if row and row.get("cnt", 0) == 0:
+                    for exam_id, title, desc, dur in _PRESCAN_SEED_EXAMS:
+                        await cur.execute(
+                            "INSERT INTO prescan_exams (id, title, description, duration_minutes, is_active) VALUES (%s,%s,%s,%s,1)",
+                            (exam_id, title, desc, dur),
+                        )
+                    print(f"[OK] Seeded {len(_PRESCAN_SEED_EXAMS)} default prescan exams.")
+    except Exception as exc:
+        print(f"[WARNING] Prescan exam seed (non-fatal): {exc}")
+
+    print("[OK] Prescan tables verified.")

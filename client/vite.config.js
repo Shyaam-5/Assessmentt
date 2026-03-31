@@ -20,8 +20,20 @@ export default defineConfig({
         include: ['react', 'react-dom', 'react/jsx-runtime']
     },
     server: {
+        host: true,
+        port: 5173,
+        strictPort: true,
+        allowedHosts: ['sauncier-epifocal-soon.ngrok-free.dev'],
         proxy: {
-            '/api': process.env.VITE_API_URL || 'http://localhost:8000'
+            '/api': {
+                target: 'http://localhost:8000',
+                changeOrigin: true,
+            },
+            '/socket.io': {
+                target: 'http://localhost:8000',
+                ws: true,          // enable WebSocket proxying for socket.io
+                changeOrigin: true,
+            },
         },
         headers: {
             'Cross-Origin-Opener-Policy': 'same-origin',

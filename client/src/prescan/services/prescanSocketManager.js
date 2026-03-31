@@ -1,0 +1,64 @@
+import { io } from 'socket.io-client';
+
+class PrescanSocketManager {
+  constructor() {
+    this.socket = null;
+    this.currentTarget = null;
+  }
+
+  connect(url) {
+    const target =
+      url
+      || (typeof window !== 'undefined' && window.location?.origin)
+      || import.meta.env.VITE_API_URL
+      || 'http://localhost:8000';
+
+    if (this.socket) {
+      if (this.currentTarget === target) {
+        if (!this.socket.connected) this.socket.connect();
+        return this.socket;
+      }
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
+    }
+
+    this.currentTarget = target;
+
+    this.socket = io(target, {
+      transports: ['websocket', 'polling'],
+      query: { 'ngrok-skip-browser-warning': 'true' },
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000,
+      extraHeaders: { 'ngrok-skip-browser-warning': 'true' },
+    });
+
+    this.socket.on('connect_error', (err) => {
+      console.error('[PrescanSocket] Connection error:', err.message);
+    });
+
+    return this.socket;
+  }
+
+  getSocket() {
+    return this.socket;
+  }
+
+  disconnect() {
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
+      this.currentTarget = null;
+    }
+  }
+
+  isConnected() {
+    return this.socket?.connected ?? false;
+  }
+}
+
+export const prescanSocketManager = new PrescanSocketManager();

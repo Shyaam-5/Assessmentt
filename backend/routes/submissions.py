@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 import pymysql.cursors
 from database import get_pool
+from config import settings
 from services.ai_service import cerebras_chat
 from services.pagination import paginated_response
 
@@ -357,7 +358,7 @@ async def create_submission(body: SubmissionCreate):
                         {"role": "system", "content": "You are a plagiarism detection system. Analyze code for copying."},
                         {"role": "user", "content": f"Submitted Code:\n{body.code}\n\nOther Submissions:\n{others_text}\n\nRespond JSON: {{\"detected\":bool,\"similarity\":0-100,\"matchedSubmissionIndex\":null or int,\"explanation\":\"\"}}. Only detected if >80%."},
                     ],
-                    model="gpt-oss-120b", temperature=0.1, max_tokens=300,
+                    model=settings.GROQ_MODEL, temperature=0.1, max_tokens=300,
                     response_format={"type": "json_object"},
                 )
                 pr = json.loads(plag_resp.get("choices", [{}])[0].get("message", {}).get("content", "{}"))
@@ -400,7 +401,7 @@ Respond JSON: {{"score":0-100,"status":"accepted|partial|rejected","feedback":".
         try:
             ai = await cerebras_chat(
                 [{"role": "system", "content": "You are an expert code evaluator."}, {"role": "user", "content": prompt}],
-                model="gpt-oss-120b", temperature=0.2, max_tokens=800,
+                model=settings.GROQ_MODEL, temperature=0.2, max_tokens=800,
                 response_format={"type": "json_object"},
             )
             eval_result = _extract_json(ai.get("choices", [{}])[0].get("message", {}).get("content", "{}"))
@@ -620,7 +621,7 @@ Respond JSON: {{"score":0-100,"status":"accepted|partial|rejected","feedback":".
         try:
             ai = await cerebras_chat(
                 [{"role": "user", "content": prompt}],
-                model="gpt-oss-120b", temperature=0.3, max_tokens=1000,
+                model=settings.GROQ_MODEL, temperature=0.3, max_tokens=1000,
                 response_format={"type": "json_object"},
             )
             eval_result = _extract_json(ai.get("choices", [{}])[0].get("message", {}).get("content", "{}"))

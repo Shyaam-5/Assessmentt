@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 import pymysql.cursors
 from database import get_pool
+from config import settings
 from services.ai_service import cerebras_chat
 
 router = APIRouter(prefix="/api", tags=["global-tests"])
@@ -1232,7 +1233,7 @@ For CORRECT coding/SQL suggest optimizations. For INCORRECT diagnose the logic g
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Analyze:\n\n{q_context}"},
                     ],
-                    model="gpt-oss-120b",
+                    model=settings.GROQ_MODEL,
                     temperature=0.7,
                     max_tokens=4000,
                     response_format={"type": "json_object"},
